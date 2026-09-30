@@ -1,4 +1,4 @@
-import type { IntegrationProvider, SyncOutcome } from "./domain";
+import type { IntegrationProvider, ProviderIssue, ProviderProject, SyncOutcome } from "./domain";
 
 /**
  * Provider adapter contract.
@@ -58,8 +58,42 @@ export interface IntegrationAdapter {
   readonly provider: IntegrationProvider;
   /** Read-only permissions: a display-only integration never asks for more. */
   readonly requiredScopes: readonly string[];
+  /**
+   * False when open issues are deliberately not fetched for this provider. The
+   * interface then says so instead of showing an empty list, which would read as
+   * "nothing is open".
+   */
+  readonly tracksIssues: boolean;
   listProjects(request: SyncRequest): Promise<SyncOutcome>;
+  listIssues(request: IssueSyncRequest): Promise<IssueSyncOutcome>;
 }
+
+/**
+ * Issues are fetched per repository, which is more requests than listing projects,
+ * so the run is bounded on purpose: a synchronisation must stay short and must not
+ * burn a whole rate-limit window on repositories nobody touched for a year.
+ */
+export type IssueSyncRequest = SyncRequest & {
+  /** Projects returned by `listProjects` in the same run. */
+  projects: readonly ProviderProject[];
+  /** Upper bound on the repositories queried. The most recently active come first. */
+  maxRepositories?: number;
+  /** Upper bound on the issues kept per repository. */
+  pageSize?: number;
+};
+
+export type IssueSyncOutcome = {
+  /** False for a provider whose issues are not tracked; the list is then empty. */
+  supported: boolean;
+  issues: ProviderIssue[];
+  fetchedAt: Date;
+  /** Repositories actually read during this run. */
+  repositoriesScanned: number;
+  /** Repositories left out because of the bound: their issues are unknown, not zero. */
+  repositoriesSkipped: number;
+  /** Repositories the provider refused to answer for (renamed, moved, deleted). */
+  repositoriesFailed: number;
+};
 
 export type JsonResponse<T> = {
   data: T;
@@ -142,4 +176,62 @@ export function assertProjectShape(
       `Projet ${provider} incomplet : identifiant, nom ou URL manquant.`,
     );
   }
+}
+
+/**
+ * Validates one normalised issue.
+ *
+ * An issue without an identifier, a title or a link cannot be displayed and would
+ * silently pollute the table, so the run fails instead of storing a half-row.
+ */
+export function assertIssueShape(
+  issue: Partial<{
+    externalId: unknown;
+    title: unknown;
+    url: unknown;
+    number: unknown;
+    openedAt: unknown;
+  }>,
+  provider: IntegrationProvider,
+): void {
+  const isText = (value: unknown): value is string =>
+    typeof value === "string" && value.length > 0;
+
+  if (
+    !isText(issue.externalId) ||
+    !isText(issue.title) ||
+    !isText(issue.url) ||
+    typeof issue.number !== "number" ||
+    issue.number <= 0 ||
+    !(issue.openedAt instanceof Date) ||
+    Number.isNaN(issue.openedAt.getTime())
+  ) {
+    throw new ProviderError(
+      "INVALID_RESPONSE",
+      `Issue ${provider} incomplète : identifiant, numéro, titre, URL ou date manquant.`,
+    );
+  }
+}
+
+/**
+ * Reads an ISO instant returned by a provider.
+ *
+ * A missing or unreadable date is a malformed response: defaulting it to now would
+ * make an ancient issue look new, which is exactly the mistake this feature exists
+ * to prevent.
+ */
+export function parseProviderInstant(
+  value: unknown,
+  provider: IntegrationProvider,
+): Date {
+  const parsed = typeof value === "string" ? new Date(value) : new Date(Number.NaN);
+
+  if (Number.isNaN(parsed.getTime())) {
+    throw new ProviderError(
+      "INVALID_RESPONSE",
+      `Date illisible renvoyée par ${provider}.`,
+    );
+  }
+
+  return parsed;
 }

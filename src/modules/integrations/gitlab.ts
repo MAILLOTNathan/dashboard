@@ -4,6 +4,7 @@ import {
   ProviderError,
   requestJson,
   type IntegrationAdapter,
+  type IssueSyncOutcome,
   type SyncRequest,
 } from "./adapter";
 import type { ProviderProject, SyncOutcome } from "./domain";
@@ -126,6 +127,16 @@ export function createGitLabAdapter(): IntegrationAdapter {
   return {
     provider: "GITLAB",
     requiredScopes: ["read_api"],
+    /**
+     * Issues are not fetched from GitLab, and the interface says so.
+     *
+     * Two reasons, both deliberate. A self-hosted instance is usually a company one:
+     * AGENTS.md requires checking the internal policy and never pulling more than what
+     * is explicitly authorised, and an issue title is already company content. And the
+     * `read_api` scope granted here authorises project metadata, not a broader read.
+     * Enabling it is a decision to take with the owner of that instance, not a default.
+     */
+    tracksIssues: false,
 
     async listProjects(request: SyncRequest): Promise<SyncOutcome> {
       const fetchImpl = request.fetchImpl ?? fetch;
@@ -176,6 +187,18 @@ export function createGitLabAdapter(): IntegrationAdapter {
       }
 
       return { projects, fetchedAt: new Date() };
+    },
+
+    async listIssues(): Promise<IssueSyncOutcome> {
+      // No request is made: see `tracksIssues` above.
+      return {
+        supported: false,
+        issues: [],
+        fetchedAt: new Date(),
+        repositoriesScanned: 0,
+        repositoriesSkipped: 0,
+        repositoriesFailed: 0,
+      };
     },
   };
 }

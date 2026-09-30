@@ -7,6 +7,7 @@ import {
   listConnections,
   markSyncFailure,
   markSyncSuccess,
+  saveIssues,
   saveSnapshots,
 } from "@/modules/integrations/repository";
 
@@ -38,6 +39,12 @@ export type SyncRunResult =
       provider: IntegrationProvider;
       status: "SYNCHRONISED";
       projectCount: number;
+      /** Open issues and pull requests followed after this run. */
+      issueCount: number;
+      /** False when the provider's issues are deliberately not fetched. */
+      issueTracking: boolean;
+      /** Repositories left out of the issue fetch because of the run bound. */
+      issuesSkippedRepositories: number;
       fetchedAt: Date;
     }
   | {
@@ -103,6 +110,29 @@ export async function synchroniseConnection(
       pruneMissing: true,
     });
 
+    // Issues come from the projects of the same run: one synchronisation, one view.
+    const issues = await adapter.listIssues({
+      token: connection.token,
+      instanceUrl: connection.instanceUrl,
+      owner: connection.externalOwner,
+      projects: outcome.projects,
+      fetchImpl: dependencies.fetchImpl,
+    });
+
+    await saveIssues({
+      connectionId: connection.id,
+      provider: connection.provider,
+      issues: issues.issues,
+      fetchedAt: issues.fetchedAt,
+      // Pruning removes closed issues, which is what keeps the list actionable. It is
+      // only safe when every targeted repository was read: a repository skipped by the
+      // bound, or refused by the provider, still has open issues that were not seen.
+      pruneMissing:
+        issues.supported &&
+        issues.repositoriesSkipped === 0 &&
+        issues.repositoriesFailed === 0,
+    });
+
     await markSyncSuccess(connection.id, outcome.fetchedAt);
 
     return {
@@ -110,6 +140,9 @@ export async function synchroniseConnection(
       provider: connection.provider,
       status: "SYNCHRONISED",
       projectCount: outcome.projects.length,
+      issueCount: issues.issues.length,
+      issueTracking: issues.supported,
+      issuesSkippedRepositories: issues.repositoriesSkipped,
       fetchedAt: outcome.fetchedAt,
     };
   } catch (error) {

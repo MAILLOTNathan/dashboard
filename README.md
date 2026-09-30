@@ -20,7 +20,8 @@ Working today:
 - Real estate: properties and cashflow entries entered from the real-estate
   page, occupancy status, totals, due dates.
 - GitHub / GitLab connections: read-only adapters, encrypted tokens, manual
-  synchronisation, project snapshots.
+  synchronisation, project snapshots, plus the open GitHub issues and pull requests
+  with the new, unanswered and long-standing ones flagged.
 - Dashboard with indicators derived from real data, distinguishing "no data",
   "not connected" and "synchronisation failed".
 

@@ -299,3 +299,213 @@ describe("nextPageUrl", () => {
     );
   });
 });
+
+/** Fictitious issues only: no real repository, title or contributor. */
+const FICTITIOUS_ISSUE = {
+  id: 900001,
+  number: 42,
+  title: "Le total mensuel ignore les remboursements",
+  html_url: "https://github.com/example-owner/example-project/issues/42",
+  comments: 0,
+  created_at: "2026-09-27T08:00:00Z",
+  updated_at: "2026-09-29T09:30:00Z",
+  labels: [{ name: "bug" }, "budget"],
+  user: { login: "contributor-one" },
+};
+
+const FICTITIOUS_PULL_REQUEST = {
+  ...FICTITIOUS_ISSUE,
+  id: 900002,
+  number: 43,
+  title: "Corrige le calcul des remboursements",
+  html_url: "https://github.com/example-owner/example-project/pull/43",
+  comments: 2,
+  pull_request: { url: "https://api.github.com/repos/example-owner/example-project/pulls/43" },
+};
+
+function project(name: string, lastPushAt: string) {
+  return {
+    externalId: name,
+    externalUrl: `https://github.com/${name}`,
+    name,
+    visibility: "private",
+    metrics: { lastPushAt },
+  };
+}
+
+function listIssuesRequest(projects: ReturnType<typeof project>[], impl: typeof fetch, extra = {}) {
+  return {
+    token: "fictitious-token",
+    instanceUrl: "",
+    owner: null,
+    projects,
+    fetchImpl: impl,
+    ...extra,
+  };
+}
+
+describe("createGitHubAdapter — issues", () => {
+  it("normalises open issues and tells pull requests apart", async () => {
+    const { impl, calls } = queueFetch([
+      () => jsonResponse([FICTITIOUS_ISSUE, FICTITIOUS_PULL_REQUEST]),
+    ]);
+
+    const outcome = await createGitHubAdapter().listIssues(
+      listIssuesRequest([project("example-owner/example-project", "2026-09-29T10:00:00Z")], impl),
+    );
+
+    expect(calls[0].url).toContain("/repos/example-owner/example-project/issues?state=open");
+    expect(calls[0].url).toContain("sort=created");
+    expect(outcome.supported).toBe(true);
+    expect(outcome.repositoriesScanned).toBe(1);
+    expect(outcome.repositoriesSkipped).toBe(0);
+    expect(outcome.repositoriesFailed).toBe(0);
+    expect(outcome.issues[0]).toEqual({
+      externalId: "900001",
+      kind: "ISSUE",
+      repository: "example-owner/example-project",
+      number: 42,
+      title: "Le total mensuel ignore les remboursements",
+      url: "https://github.com/example-owner/example-project/issues/42",
+      authorLogin: "contributor-one",
+      commentsCount: 0,
+      // Labels mix strings and objects in the same payload; only names are kept.
+      labels: ["bug", "budget"],
+      openedAt: new Date("2026-09-27T08:00:00Z"),
+      activityAt: new Date("2026-09-29T09:30:00Z"),
+    });
+    // The endpoint returns both kinds: the discriminator is the pull_request key.
+    expect(outcome.issues[1].kind).toBe("PULL_REQUEST");
+  });
+
+  it("queries the most recently pushed repositories first, and reports the rest as not read", async () => {
+    const { impl, calls } = queueFetch([() => jsonResponse([]), () => jsonResponse([])]);
+
+    const outcome = await createGitHubAdapter().listIssues(
+      listIssuesRequest(
+        [
+          project("example-owner/quiet", "2025-01-05T10:00:00Z"),
+          project("example-owner/busy", "2026-09-30T10:00:00Z"),
+          project("example-owner/middle", "2026-08-01T10:00:00Z"),
+        ],
+        impl,
+        { maxRepositories: 2 },
+      ),
+    );
+
+    expect(calls.map((call) => call.url)).toEqual([
+      expect.stringContaining("/repos/example-owner/busy/issues"),
+      expect.stringContaining("/repos/example-owner/middle/issues"),
+    ]);
+    expect(outcome.repositoriesScanned).toBe(2);
+    // Not read is not "nothing open": the count travels with the result.
+    expect(outcome.repositoriesSkipped).toBe(1);
+  });
+
+  it("keeps the other repositories when one is refused", async () => {
+    const { impl } = queueFetch([
+      () => jsonResponse({ message: "Not Found" }, { status: 404 }),
+      () => jsonResponse([FICTITIOUS_ISSUE]),
+    ]);
+
+    const outcome = await createGitHubAdapter().listIssues(
+      listIssuesRequest(
+        [
+          project("example-owner/renamed", "2026-09-30T10:00:00Z"),
+          project("example-owner/example-project", "2026-09-29T10:00:00Z"),
+        ],
+        impl,
+      ),
+    );
+
+    expect(outcome.issues).toHaveLength(1);
+    expect(outcome.repositoriesScanned).toBe(1);
+    expect(outcome.repositoriesFailed).toBe(1);
+  });
+
+  it("fails the run when every repository is refused, instead of publishing an empty list", async () => {
+    const { impl } = queueFetch([
+      () => jsonResponse({ message: "Not Found" }, { status: 404 }),
+      () => jsonResponse({ message: "Not Found" }, { status: 404 }),
+    ]);
+
+    await expect(
+      createGitHubAdapter().listIssues(
+        listIssuesRequest(
+          [
+            project("example-owner/renamed", "2026-09-30T10:00:00Z"),
+            project("example-owner/moved", "2026-09-30T09:00:00Z"),
+          ],
+          impl,
+        ),
+      ),
+    ).rejects.toBeInstanceOf(ProviderError);
+  });
+
+  it("fails the run on a rate limit: a partial view must not look complete", async () => {
+    const { impl, calls } = queueFetch([
+      () =>
+        jsonResponse(
+          { message: "API rate limit exceeded" },
+          { status: 403, headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1893456000" } },
+        ),
+    ]);
+
+    await expect(
+      createGitHubAdapter().listIssues(
+        listIssuesRequest(
+          [
+            project("example-owner/one", "2026-09-30T10:00:00Z"),
+            project("example-owner/two", "2026-09-29T10:00:00Z"),
+          ],
+          impl,
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "RATE_LIMITED" });
+    // It stops at the first refusal rather than hammering the remaining repositories.
+    expect(calls).toHaveLength(1);
+  });
+
+  it("rejects an issue without a readable date instead of dating it now", async () => {
+    const { impl } = queueFetch([
+      () => jsonResponse([{ ...FICTITIOUS_ISSUE, created_at: null }]),
+    ]);
+
+    await expect(
+      createGitHubAdapter().listIssues(
+        listIssuesRequest([project("example-owner/example-project", "2026-09-30T10:00:00Z")], impl),
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+  });
+
+  it("rejects a title-less issue rather than storing a blank row", async () => {
+    const { impl } = queueFetch([() => jsonResponse([{ ...FICTITIOUS_ISSUE, title: "" }])]);
+
+    await expect(
+      createGitHubAdapter().listIssues(
+        listIssuesRequest([project("example-owner/example-project", "2026-09-30T10:00:00Z")], impl),
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+  });
+
+  it("makes no request when there is no repository to inspect", async () => {
+    const { impl, calls } = queueFetch([]);
+
+    const outcome = await createGitHubAdapter().listIssues(listIssuesRequest([], impl));
+
+    expect(calls).toHaveLength(0);
+    expect(outcome.issues).toEqual([]);
+    expect(outcome.repositoriesScanned).toBe(0);
+  });
+
+  it("never sends the token in the URL of an issue request", async () => {
+    const { impl, calls } = queueFetch([() => jsonResponse([])]);
+
+    await createGitHubAdapter().listIssues(
+      listIssuesRequest([project("example-owner/example-project", "2026-09-30T10:00:00Z")], impl),
+    );
+
+    expect(calls[0].url).not.toContain("fictitious-token");
+    expect((calls[0].init?.headers as Record<string, string>)["PRIVATE-TOKEN"]).toBeUndefined();
+  });
+});

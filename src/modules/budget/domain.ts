@@ -69,6 +69,56 @@ export function isTransfer(transaction: Pick<TransactionRecord, "type">): boolea
 }
 
 /**
+ * The category kind a transaction type may use.
+ *
+ * A transaction and its category must tell the same story: an `EXPENSE` on an
+ * `INCOME` category (or the reverse) would be counted in the wrong place by every
+ * filter and every report built on `kind`, without anything failing visibly.
+ *
+ * A transfer returns `null` on purpose: moving money between two of your own
+ * accounts is neither a receipt nor a cost, transfers are already excluded from the
+ * monthly totals, so no category applies and the form does not offer one.
+ */
+export function categoryKindForTransactionType(type: TransactionType): CategoryKind | null {
+  if (type === "TRANSFER") {
+    return null;
+  }
+
+  return type === "INCOME" ? "INCOME" : "EXPENSE";
+}
+
+/**
+ * Why this category cannot be used with this transaction type, or `null` when it can.
+ *
+ * `null` means "no category chosen", which is always valid: a category is optional.
+ *
+ * The form filters the list, so this only ever answers a request that did not come
+ * from the rendered form — a replayed body, or a category whose kind changed in
+ * another tab. Returning the reason rather than a boolean keeps the message in the
+ * module, next to the rule it explains.
+ */
+export function categoryMismatchReason(
+  type: TransactionType,
+  category: Pick<CategorySummary, "kind"> | null,
+): string | null {
+  if (category === null) {
+    return null;
+  }
+
+  const expected = categoryKindForTransactionType(type);
+
+  if (expected === null) {
+    return "Un transfert entre comptes ne porte pas de catégorie.";
+  }
+
+  if (category.kind !== expected) {
+    return "Cette catégorie n'est pas du même type que l'opération : une recette utilise une catégorie de recette, une dépense une catégorie de dépense.";
+  }
+
+  return null;
+}
+
+/**
  * Input contract for a manually tracked account.
  *
  * No banking credential is ever part of this contract: the dashboard tracks

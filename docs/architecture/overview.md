@@ -81,6 +81,11 @@ flowchart LR
 - **Imports** are made re-runnable by a unique constraint on
   `(accountId, externalRef)`: replaying an import fails loudly instead of
   duplicating a line.
+- **Categories** carry a kind (`INCOME` or `EXPENSE`), and a transaction may only use
+  a category of its own kind — `categoryKindForTransactionType` is the single source
+  of that rule, used by the form to filter the list and by the Server Action to refuse
+  a replayed request. A `TRANSFER` takes no category at all: it is neither a receipt
+  nor a cost.
 
 ## Documented indicator definitions
 
@@ -92,6 +97,19 @@ flowchart LR
   and net: moving money between two accounts is neither a receipt nor a cost.
 - Property totals — each cashflow entry counts once. When an entry is linked to
   a transaction, the transaction is the only source of the amount.
+- GitHub issues — only **open** issues and pull requests are kept, and only the
+  fields needed to act: title, link, author, comment count, labels, dates. No
+  description, no comment body, no source code: reading them stays at the provider.
+  - `recent` — opened less than 14 days ago, whatever the kind.
+  - `unanswered` — an *issue* (not a pull request) open for at least 3 days with
+    zero comments. This is the signal that goes unnoticed in a busy repository.
+  - `pullRequests` — open pull requests, counted apart: they are review work, not
+    reports.
+  - `stale` — an issue open for at least 90 days. Reported, never judged: a
+    long-lived issue may be a deliberate plan.
+  - `oldestOpen` — the oldest open issue, with its age in whole days.
+  A closed issue leaves the list at the next synchronisation, which is what keeps
+  it a to-do list rather than an archive.
 
 An indicator is only displayed once its definition is written down, which is
 what this section is for.
@@ -124,6 +142,23 @@ function for convenience.
 
 A failure keeps the previous `lastSyncedAt` and stores a safe error code, so the
 interface can show "synchronisation failed" instead of an empty dashboard.
+
+### Issues: an explicitly bounded run
+
+A run also fetches the open issues and pull requests of the tracked repositories,
+for the providers that expose them (GitHub; see the GitLab adapter for why it is
+deliberately excluded). Issues cost one request per repository, so the run is
+bounded on purpose: repositories are ordered by recent activity and only the most
+recently pushed ones are queried, with a fixed page size each. A repository that
+was not read is reported as such after a manual run — never as "nothing is open".
+
+A single unreadable repository (renamed, moved, deleted) is counted and skipped:
+it must not cost the others. A quota or a revoked token fails the whole run
+instead, because a partial issue list would look complete.
+
+Closed issues are deleted at the next run, which only happens when every targeted
+repository was read: a repository skipped by the bound, or refused by the provider,
+still has open issues that were not seen.
 
 ## Not implemented in this base
 

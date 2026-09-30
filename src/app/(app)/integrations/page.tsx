@@ -15,8 +15,9 @@ import {
   INTEGRATION_PROVIDERS,
   type IntegrationProvider,
 } from "@/modules/integrations/domain";
-import { listConnections } from "@/modules/integrations/repository";
+import { listConnections, listIssues } from "@/modules/integrations/repository";
 import { connectProviderAction, syncConnectionAction } from "./actions";
+import { IssuesCard } from "./issues-card";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +38,9 @@ const SCOPES: Record<IntegrationProvider, string> = {
   GITLAB: "read_api",
 };
 
+/** Providers whose open issues are fetched. See the GitLab adapter for the reasons. */
+const ISSUE_TRACKING_PROVIDERS: readonly IntegrationProvider[] = ["GITHUB"];
+
 export default async function IntegrationsPage({
   searchParams,
 }: {
@@ -44,11 +48,27 @@ export default async function IntegrationsPage({
 }) {
   const user = await requireUser();
   const params = await searchParams;
-  const connections = await listConnections(user.id);
+  const [connections, issues] = await Promise.all([
+    listConnections(user.id),
+    listIssues(user.id),
+  ]);
+
+  const issueConnections = connections.filter((connection) =>
+    ISSUE_TRACKING_PROVIDERS.includes(connection.provider),
+  );
+  const lastIssueSync = issueConnections.reduce<Date | null>((latest, connection) => {
+    if (!connection.lastSyncedAt) {
+      return latest;
+    }
+
+    return !latest || connection.lastSyncedAt > latest ? connection.lastSyncedAt : latest;
+  }, null);
 
   const status = typeof params.status === "string" ? params.status : undefined;
   const sync = typeof params.sync === "string" ? params.sync : undefined;
   const projectCount = typeof params.projects === "string" ? params.projects : undefined;
+  const issueCount = typeof params.issues === "string" ? params.issues : undefined;
+  const issueTracking = typeof params.tracking === "string" ? params.tracking : undefined;
   const reason = typeof params.reason === "string" ? params.reason : undefined;
   const code = typeof params.code === "string" ? params.code : undefined;
 
@@ -65,7 +85,10 @@ export default async function IntegrationsPage({
 
       {sync === "ok" ? (
         <Notice tone="info">
-          Synchronisation terminée : {projectCount ?? "0"} projet(s) autorisé(s) mis à jour.
+          Synchronisation terminée : {projectCount ?? "0"} projet(s) mis à jour
+          {issueTracking === "off"
+            ? ". Les issues de ce fournisseur ne sont pas récupérées."
+            : `, ${issueCount ?? "0"} issue(s) ouverte(s) suivie(s).`}
         </Notice>
       ) : null}
 
@@ -130,7 +153,16 @@ export default async function IntegrationsPage({
                   </td>
                   <td className={tdClass}>
                     {connection.status === "CONNECTED" && connection.lastSyncedAt ? (
-                      <Badge tone="positive">{connection.projectCount} projet(s)</Badge>
+                      <>
+                        <Badge tone="positive">{connection.projectCount} projet(s)</Badge>
+                        {ISSUE_TRACKING_PROVIDERS.includes(connection.provider) ? (
+                          <span className="mt-1 block">
+                            <Badge tone={connection.issueCount > 0 ? "warning" : "neutral"}>
+                              {connection.issueCount} issue(s) ouverte(s)
+                            </Badge>
+                          </span>
+                        ) : null}
+                      </>
                     ) : connection.status === "ERROR" ? (
                       <Badge tone="negative">
                         Erreur{connection.lastSyncError ? ` — ${connection.lastSyncError}` : ""}
@@ -163,6 +195,12 @@ export default async function IntegrationsPage({
           </TableShell>
         )}
       </Card>
+
+      <IssuesCard
+        issues={issues}
+        issueTrackingConnected={issueConnections.length > 0}
+        lastSyncedAt={lastIssueSync}
+      />
 
       <Card
         title="Ajouter ou remplacer une connexion"

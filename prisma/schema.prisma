@@ -60,6 +60,13 @@ enum IntegrationStatus {
   ERROR
 }
 
+/// An open issue and an open pull request arrive from the same provider endpoint;
+/// they stay distinct because they call for different actions.
+enum IssueKind {
+  ISSUE
+  PULL_REQUEST
+}
+
 /// Sole owner of the dashboard. No public sign-up: users are created by the seed script.
 model User {
   id           String   @id @default(cuid())
@@ -208,6 +215,7 @@ model IntegrationConnection {
 
   user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   snapshots ProjectSnapshot[]
+  issues    IssueSnapshot[]
 
   @@unique([userId, provider, instanceUrl])
   @@index([userId])
@@ -233,4 +241,41 @@ model ProjectSnapshot {
 
   @@unique([connectionId, externalId])
   @@index([connectionId, fetchedAt])
+}
+
+/// An open issue or pull request, kept only to render the dashboard.
+///
+/// Deliberately narrow: title, identifier, address, author, comment count, labels
+/// and dates. No description, no comment text, no source code: those belong to the
+/// provider and often carry things that must not be copied into another tool.
+/// Closed issues are not kept: a row disappears at the next synchronisation, which
+/// is what makes the list a to-do list rather than an archive.
+model IssueSnapshot {
+  id           String              @id @default(cuid())
+  connectionId String
+  provider     IntegrationProvider
+  /// Provider identifier, kept so a re-run updates instead of duplicating.
+  externalId   String
+  kind         IssueKind
+  /// Repository full name, for example "owner/repo".
+  repository   String
+  number       Int
+  title        String
+  url          String
+  authorLogin  String?
+  commentsCount Int
+  labels       String[]
+  /// Instant the issue was opened at the provider.
+  openedAt     DateTime            @db.Timestamptz(3)
+  /// Instant of the last activity at the provider (comment, label, edit).
+  activityAt   DateTime            @db.Timestamptz(3)
+  fetchedAt    DateTime            @db.Timestamptz(3)
+  createdAt    DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime            @updatedAt @db.Timestamptz(3)
+
+  connection IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, externalId])
+  @@index([connectionId, fetchedAt])
+  @@index([connectionId, kind, openedAt])
 }

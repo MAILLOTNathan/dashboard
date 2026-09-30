@@ -3,6 +3,8 @@ import {
   accountInputSchema,
   assertAmountMatchesType,
   categoryInputSchema,
+  categoryKindForTransactionType,
+  categoryMismatchReason,
   transactionFormSchema,
   type TransactionType,
 } from "./domain";
@@ -122,6 +124,50 @@ describe("transactionFormSchema", () => {
   it("rejects a missing account", () => {
     expect(transactionFormSchema.safeParse({ ...validForm, accountId: "" }).success).toBe(
       false,
+    );
+  });
+});
+
+describe("categoryKindForTransactionType", () => {
+  it("pairs an income with income categories", () => {
+    expect(categoryKindForTransactionType("INCOME")).toBe("INCOME");
+  });
+
+  it("pairs an expense with expense categories", () => {
+    expect(categoryKindForTransactionType("EXPENSE")).toBe("EXPENSE");
+  });
+
+  it("leaves a transfer without a category", () => {
+    // A transfer moves money between two of your own accounts: it is neither a
+    // receipt nor a cost, and it is already excluded from the monthly totals.
+    expect(categoryKindForTransactionType("TRANSFER")).toBeNull();
+  });
+});
+
+describe("categoryMismatchReason", () => {
+  const expenseCategory = { kind: "EXPENSE" } as const;
+  const incomeCategory = { kind: "INCOME" } as const;
+
+  it("accepts a category of the matching kind", () => {
+    expect(categoryMismatchReason("EXPENSE", expenseCategory)).toBeNull();
+    expect(categoryMismatchReason("INCOME", incomeCategory)).toBeNull();
+  });
+
+  it("always accepts no category at all: a category is optional", () => {
+    expect(categoryMismatchReason("EXPENSE", null)).toBeNull();
+    expect(categoryMismatchReason("INCOME", null)).toBeNull();
+    // The usual case for a transfer between two of your own accounts.
+    expect(categoryMismatchReason("TRANSFER", null)).toBeNull();
+  });
+
+  it("refuses an income category on an expense, and the reverse", () => {
+    expect(categoryMismatchReason("EXPENSE", incomeCategory)).toMatch(/même type/);
+    expect(categoryMismatchReason("INCOME", expenseCategory)).toMatch(/même type/);
+  });
+
+  it("refuses any category on a transfer", () => {
+    expect(categoryMismatchReason("TRANSFER", expenseCategory)).toMatch(
+      /transfert entre comptes ne porte pas de catégorie/,
     );
   });
 });

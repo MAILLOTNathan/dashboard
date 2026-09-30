@@ -12,6 +12,7 @@ import {
   accountInputSchema,
   assertAmountMatchesType,
   categoryInputSchema,
+  categoryMismatchReason,
   transactionFormSchema,
 } from "@/modules/budget/domain";
 import {
@@ -93,8 +94,18 @@ export async function createTransactionAction(values: unknown): Promise<ActionRe
     return rejectedResult("accountId", "Compte introuvable.");
   }
 
-  if (input.categoryId && !(await findCategory(user.id, input.categoryId))) {
+  // The form only offers categories of the matching kind, but a request body can be
+  // replayed by hand: the rule is enforced here too, or an expense would sit on an
+  // income category and be counted in the wrong place by every report.
+  const category = input.categoryId ? await findCategory(user.id, input.categoryId) : null;
+
+  if (input.categoryId && !category) {
     return rejectedResult("categoryId", "Catégorie introuvable.");
+  }
+
+  const categoryMismatch = categoryMismatchReason(input.type, category);
+  if (categoryMismatch) {
+    return rejectedResult("categoryId", categoryMismatch);
   }
 
   // Refuses an income written as a negative amount: the sign carries the meaning.

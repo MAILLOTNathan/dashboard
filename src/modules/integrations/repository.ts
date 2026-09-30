@@ -1,11 +1,14 @@
 import { getPrisma } from "@/lib/db";
 import { decodeEncryptionKey, decryptSecret, encryptSecret } from "@/lib/crypto";
 import { getServerEnv } from "@/lib/env";
-import type {
-  ConnectionSummary,
-  IntegrationProvider,
-  IntegrationStatus,
-  ProviderProject,
+import {
+  describeInstance,
+  type ConnectionSummary,
+  type IntegrationProvider,
+  type IntegrationStatus,
+  type IssueKind,
+  type ProviderIssue,
+  type ProviderProject,
 } from "./domain";
 
 /**
@@ -35,7 +38,7 @@ export async function listConnections(
       lastSyncedAt: true,
       lastSyncError: true,
       credentialsCiphertext: true,
-      _count: { select: { snapshots: true } },
+      _count: { select: { snapshots: true, issues: true } },
     },
   });
 
@@ -50,6 +53,7 @@ export async function listConnections(
     lastSyncError: row.lastSyncError,
     hasStoredToken: Boolean(row.credentialsCiphertext),
     projectCount: row._count.snapshots,
+    issueCount: row._count.issues,
   }));
 }
 
@@ -229,4 +233,134 @@ export async function markSyncFailure(
     where: { id: connectionId },
     data: { status: "ERROR", lastSyncError: safeMessage },
   });
+}
+
+/**
+ * One issue as the interface displays it. Never a provider payload.
+ */
+export type IssueSummary = {
+  id: string;
+  kind: IssueKind;
+  provider: IntegrationProvider;
+  /** Instance the issue comes from, so two connections stay distinguishable. */
+  connectionLabel: string;
+  repository: string;
+  number: number;
+  title: string;
+  url: string;
+  authorLogin: string | null;
+  commentsCount: number;
+  labels: string[];
+  openedAt: Date;
+  activityAt: Date;
+};
+
+/**
+ * Stores the open issues and pull requests of one synchronisation.
+ *
+ * Same idempotency rule as the project snapshots: upserting on
+ * (connectionId, externalId) makes a re-run update rows instead of duplicating
+ * them. `pruneMissing` deletes what the provider no longer reports as open —
+ * a closed issue must leave this list, which is what keeps it a to-do list and not
+ * an archive. It is only safe once every targeted repository was read: a repository
+ * skipped by the bound, or refused by the provider, would have its issues erased
+ * while they are still open.
+ */
+export async function saveIssues(input: {
+  connectionId: string;
+  provider: IntegrationProvider;
+  issues: readonly ProviderIssue[];
+  fetchedAt: Date;
+  pruneMissing?: boolean;
+}): Promise<number> {
+  const prisma = getPrisma();
+
+  for (const issue of input.issues) {
+    const data = {
+      provider: input.provider,
+      kind: issue.kind,
+      repository: issue.repository,
+      number: issue.number,
+      title: issue.title,
+      url: issue.url,
+      authorLogin: issue.authorLogin,
+      commentsCount: issue.commentsCount,
+      labels: issue.labels,
+      openedAt: issue.openedAt,
+      activityAt: issue.activityAt,
+      fetchedAt: input.fetchedAt,
+    };
+
+    await prisma.issueSnapshot.upsert({
+      where: {
+        connectionId_externalId: {
+          connectionId: input.connectionId,
+          externalId: issue.externalId,
+        },
+      },
+      create: { connectionId: input.connectionId, externalId: issue.externalId, ...data },
+      update: data,
+    });
+  }
+
+  if (input.pruneMissing) {
+    await prisma.issueSnapshot.deleteMany({
+      where: {
+        connectionId: input.connectionId,
+        externalId: { notIn: input.issues.map((issue) => issue.externalId) },
+      },
+    });
+  }
+
+  return input.issues.length;
+}
+
+/**
+ * Every open issue and pull request followed by this owner, newest first.
+ *
+ * Scoped through the connection, so a query can never return another owner's
+ * issues. The volume is bounded by the synchronisation itself (the most recently
+ * active repositories, a fixed page size per repository), which is why the whole
+ * set is returned: the page computes its indicators on all of it and only the
+ * table is truncated.
+ */
+export async function listIssues(userId: string): Promise<IssueSummary[]> {
+  const rows = await getPrisma().issueSnapshot.findMany({
+    where: { connection: { userId } },
+    orderBy: [{ openedAt: "desc" }],
+    select: {
+      id: true,
+      kind: true,
+      provider: true,
+      repository: true,
+      number: true,
+      title: true,
+      url: true,
+      authorLogin: true,
+      commentsCount: true,
+      labels: true,
+      openedAt: true,
+      activityAt: true,
+      connection: { select: { instanceUrl: true } },
+    },
+  });
+
+  return rows.map((row) => ({
+    id: row.id,
+    kind: row.kind as IssueKind,
+    provider: row.provider as IntegrationProvider,
+    connectionLabel: describeInstance(
+      row.provider as IntegrationProvider,
+      row.connection.instanceUrl,
+    ),
+    repository: row.repository,
+    number: row.number,
+    title: row.title,
+    url: row.url,
+    authorLogin: row.authorLogin,
+    commentsCount: row.commentsCount,
+    labels: row.labels,
+    openedAt: row.openedAt,
+    activityAt: row.activityAt,
+  }));
 }

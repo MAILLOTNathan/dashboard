@@ -35,6 +35,34 @@ export type ProviderProject = {
   metrics: Record<string, unknown>;
 };
 
+export const ISSUE_KINDS = ["ISSUE", "PULL_REQUEST"] as const;
+export type IssueKind = (typeof ISSUE_KINDS)[number];
+
+/**
+ * One open issue or pull request, reduced to what the interface displays.
+ *
+ * There is deliberately no description and no comment body: pulling those in would
+ * copy arbitrary provider content — which often carries credentials, customer names
+ * or code — into this database and into its backups. The title, the number and the
+ * link are enough to decide what to look at; the reading happens at the provider.
+ */
+export type ProviderIssue = {
+  externalId: string;
+  kind: IssueKind;
+  /** Repository full name, for example "owner/repo". */
+  repository: string;
+  number: number;
+  title: string;
+  url: string;
+  authorLogin: string | null;
+  commentsCount: number;
+  labels: string[];
+  /** Instant the issue was opened at the provider. */
+  openedAt: Date;
+  /** Instant of the last activity at the provider. */
+  activityAt: Date;
+};
+
 export type SyncOutcome = {
   projects: ProviderProject[];
   fetchedAt: Date;
@@ -52,6 +80,8 @@ export type ConnectionSummary = {
   /** A token is stored, but its value never leaves the server. */
   hasStoredToken: boolean;
   projectCount: number;
+  /** Open issues and pull requests currently followed, zero when unsupported. */
+  issueCount: number;
 };
 
 /** Public host used when the connection targets the provider's own instance. */

@@ -58,7 +58,14 @@ export async function syncConnectionAction(formData: FormData): Promise<void> {
   revalidatePath("/integrations");
 
   if (result.status === "SYNCHRONISED") {
-    redirect(`/integrations?sync=ok&projects=${result.projectCount}`);
+    const params = new URLSearchParams({
+      sync: "ok",
+      projects: String(result.projectCount),
+      issues: String(result.issueCount),
+      tracking: result.issueTracking ? "on" : "off",
+    });
+
+    redirect(`/integrations?${params.toString()}`);
   }
   if (result.status === "FAILED") {
     redirect(`/integrations?sync=error&code=${encodeURIComponent(result.code)}`);

@@ -1,14 +1,16 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { FormFeedback, SubmitButton, useRecordedAction } from "@/components/forms";
 import { Field, Notice, inputClass } from "@/components/ui";
 import {
+  categoryKindForTransactionType,
   TRANSACTION_TYPES,
   transactionFormSchema,
   type AccountSummary,
+  type CategoryKind,
   type CategorySummary,
   type TransactionFormValues,
   type TransactionType,
@@ -19,6 +21,11 @@ const TYPE_LABELS: Record<TransactionType, string> = {
   INCOME: "Recette",
   EXPENSE: "Dépense",
   TRANSFER: "Transfert entre comptes",
+};
+
+const KIND_LABEL: Record<CategoryKind, string> = {
+  INCOME: "recette",
+  EXPENSE: "dépense",
 };
 
 /**
@@ -51,9 +58,17 @@ export function TransactionForm({
   });
   const { result, submit } = useRecordedAction(form, createTransactionAction);
   const { errors, isSubmitting } = form.formState;
+  const [droppedCategory, setDroppedCategory] = useState<string | null>(null);
 
   const selectedAccountId = useWatch({ control: form.control, name: "accountId" });
   const selectedAccount = accounts.find((account) => account.id === selectedAccountId);
+  const selectedType = useWatch({ control: form.control, name: "type" });
+
+  // The rule lives in the module, so the form and the server cannot disagree.
+  const categoryKind = categoryKindForTransactionType(selectedType ?? "EXPENSE");
+  const selectableCategories = categories.filter(
+    (category) => category.kind === categoryKind,
+  );
 
   // The account list grows while this form is mounted (the account form sits just
   // above): adopt the first account without ever overriding a chosen one.
@@ -62,6 +77,29 @@ export function TransactionForm({
       form.setValue("accountId", accounts[0].id);
     }
   }, [accounts, form]);
+
+  // Changing the type must not keep a category of the other kind selected: the server
+  // would refuse the record anyway, and a stale choice is easy to miss. The removal is
+  // announced rather than silent.
+  function handleTypeChange(event: React.ChangeEvent<HTMLSelectElement>): void {
+    const chosenId = form.getValues("categoryId");
+    const nextKind = categoryKindForTransactionType(event.target.value as TransactionType);
+
+    if (!chosenId) {
+      setDroppedCategory(null);
+      return;
+    }
+
+    const chosen = categories.find((category) => category.id === chosenId);
+
+    if (chosen && chosen.kind === nextKind) {
+      setDroppedCategory(null);
+      return;
+    }
+
+    form.setValue("categoryId", "");
+    setDroppedCategory(chosen?.name ?? "La catégorie sélectionnée");
+  }
 
   if (accounts.length === 0) {
     return (
@@ -88,7 +126,11 @@ export function TransactionForm({
       </Field>
 
       <Field label="Type" htmlFor="transaction-type" error={errors.type?.message}>
-        <select id="transaction-type" className={inputClass} {...form.register("type")}>
+        <select
+          id="transaction-type"
+          className={inputClass}
+          {...form.register("type", { onChange: handleTypeChange })}
+        >
           {TRANSACTION_TYPES.map((type) => (
             <option key={type} value={type}>
               {TYPE_LABELS[type]}
@@ -139,20 +181,41 @@ export function TransactionForm({
         />
       </Field>
 
-      <Field label="Catégorie" htmlFor="transaction-category" error={errors.categoryId?.message}>
-        <select
-          id="transaction-category"
-          className={inputClass}
-          {...form.register("categoryId")}
+      {categoryKind === null ? (
+        <div className="flex flex-col gap-1 text-sm">
+          <span className="font-medium">Catégorie</span>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Un transfert entre comptes n&apos;est ni une recette ni une dépense : aucune
+            catégorie ne s&apos;applique.
+          </p>
+        </div>
+      ) : (
+        <Field
+          label="Catégorie"
+          htmlFor="transaction-category"
+          error={errors.categoryId?.message}
+          hint={
+            selectableCategories.length === 0
+              ? `Aucune catégorie de type ${KIND_LABEL[categoryKind]} n'existe encore : créez-en une dans « Nouvelle catégorie » ci-dessous.`
+              : `Seules les catégories de type ${KIND_LABEL[categoryKind]} sont proposées, pour rester cohérentes avec le type de l'opération.`
+          }
         >
-          <option value="">Aucune</option>
-          {categories.map((category) => (
-            <option key={category.id} value={category.id}>
-              {category.name}
-            </option>
-          ))}
-        </select>
-      </Field>
+          <select
+            id="transaction-category"
+            className={inputClass}
+            {...form.register("categoryId", {
+              onChange: () => setDroppedCategory(null),
+            })}
+          >
+            <option value="">Aucune</option>
+            {selectableCategories.map((category) => (
+              <option key={category.id} value={category.id}>
+                {category.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
 
       <Field
         label="Notes"
@@ -162,6 +225,15 @@ export function TransactionForm({
       >
         <textarea id="transaction-notes" rows={2} className={inputClass} {...form.register("notes")} />
       </Field>
+
+      <div className="sm:col-span-2 lg:col-span-3">
+        {droppedCategory && categoryKind !== null ? (
+          <Notice tone="warning">
+            Catégorie « {droppedCategory} » retirée : elle ne correspond pas au type
+            sélectionné. Choisissez une catégorie du bon type, ou aucune.
+          </Notice>
+        ) : null}
+      </div>
 
       <div className="sm:col-span-2 lg:col-span-3">
         <SubmitButton label="Enregistrer l'opération" pending={isSubmitting} />
