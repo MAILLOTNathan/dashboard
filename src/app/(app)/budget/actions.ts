@@ -15,6 +15,10 @@ import {
   categoryInputSchema,
   categoryMismatchReason,
   transactionFormSchema,
+  transactionUpdateSchema,
+  type AccountSummary,
+  type CategorySummary,
+  type ValidatedTransactionForm,
 } from "@/modules/budget/domain";
 import {
   createAccount,
@@ -23,6 +27,7 @@ import {
   deleteTransaction,
   findAccount,
   findCategory,
+  updateTransaction,
 } from "@/modules/budget/repository";
 import { findCashflowLinkedToTransaction } from "@/modules/real-estate/repository";
 
@@ -80,6 +85,57 @@ export async function createCategoryAction(values: unknown): Promise<ActionResul
   return { status: "ok" };
 }
 
+/**
+ * Validation shared by the creation and the edition of a transaction.
+ *
+ * The two write the same fields under the same rules, and letting them drift apart is
+ * how an edition ends up accepting what a creation refuses. The owner identifier comes
+ * from the session in both cases, never from the payload, so a replayed identifier
+ * cannot point at somebody else's account.
+ */
+async function resolveTransactionInput(
+  userId: string,
+  input: ValidatedTransactionForm,
+): Promise<{ ok: true; account: AccountSummary } | { ok: false; result: ActionResult }> {
+  // The account is owned by the user, and it is what determines the currency:
+  // the form deliberately carries no currency field.
+  const account = await findAccount(userId, input.accountId);
+  if (!account) {
+    return { ok: false, result: rejectedResult("accountId", "Compte introuvable.") };
+  }
+
+  // The form only offers categories of the matching kind, but a request body can be
+  // replayed by hand: the rule is enforced here too, or an expense would sit on an
+  // income category and be counted in the wrong place by every report.
+  const category: CategorySummary | null = input.categoryId
+    ? await findCategory(userId, input.categoryId)
+    : null;
+
+  if (input.categoryId && !category) {
+    return { ok: false, result: rejectedResult("categoryId", "Catégorie introuvable.") };
+  }
+
+  const categoryMismatch = categoryMismatchReason(input.type, category);
+  if (categoryMismatch) {
+    return { ok: false, result: rejectedResult("categoryId", categoryMismatch) };
+  }
+
+  // Refuses an income written as a negative amount: the sign carries the meaning.
+  try {
+    assertAmountMatchesType(input.amount, input.type);
+  } catch (error) {
+    return {
+      ok: false,
+      result: rejectedResult(
+        "amount",
+        error instanceof Error ? error.message : "Montant incohérent avec le type.",
+      ),
+    };
+  }
+
+  return { ok: true, account };
+}
+
 export async function createTransactionAction(values: unknown): Promise<ActionResult> {
   const user = await requireUser();
 
@@ -90,46 +146,20 @@ export async function createTransactionAction(values: unknown): Promise<ActionRe
 
   const input = parsed.data;
 
-  // The account is owned by the user, and it is what determines the currency:
-  // the form deliberately carries no currency field.
-  const account = await findAccount(user.id, input.accountId);
-  if (!account) {
-    return rejectedResult("accountId", "Compte introuvable.");
-  }
-
-  // The form only offers categories of the matching kind, but a request body can be
-  // replayed by hand: the rule is enforced here too, or an expense would sit on an
-  // income category and be counted in the wrong place by every report.
-  const category = input.categoryId ? await findCategory(user.id, input.categoryId) : null;
-
-  if (input.categoryId && !category) {
-    return rejectedResult("categoryId", "Catégorie introuvable.");
-  }
-
-  const categoryMismatch = categoryMismatchReason(input.type, category);
-  if (categoryMismatch) {
-    return rejectedResult("categoryId", categoryMismatch);
-  }
-
-  // Refuses an income written as a negative amount: the sign carries the meaning.
-  try {
-    assertAmountMatchesType(input.amount, input.type);
-  } catch (error) {
-    return rejectedResult(
-      "amount",
-      error instanceof Error ? error.message : "Montant incohérent avec le type.",
-    );
+  const resolved = await resolveTransactionInput(user.id, input);
+  if (!resolved.ok) {
+    return resolved.result;
   }
 
   try {
     await createTransaction({
       userId: user.id,
-      accountId: account.id,
+      accountId: resolved.account.id,
       categoryId: input.categoryId,
       type: input.type,
       label: input.label,
       amount: input.amount,
-      currency: account.currency,
+      currency: resolved.account.currency,
       operationDate: input.operationDate,
       notes: input.notes,
       // Imports set this to the source identifier of the record; a manual entry
@@ -138,6 +168,56 @@ export async function createTransactionAction(values: unknown): Promise<ActionRe
     });
   } catch (error) {
     return unexpectedResult("createTransaction", error);
+  }
+
+  revalidatePath("/budget");
+  revalidatePath("/dashboard");
+  return { status: "ok" };
+}
+
+/**
+ * Edits one transaction in place.
+ *
+ * Same rules as the creation, plus one of its own: the row must still exist and belong
+ * to the signed-in owner. Correcting a line matters more than it looks — deleting it and
+ * typing it again would drop the link a property cashflow holds on it, and move the date
+ * of a correction nobody asked to recreate.
+ */
+export async function updateTransactionAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = transactionUpdateSchema.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  const input = parsed.data;
+
+  const resolved = await resolveTransactionInput(user.id, input);
+  if (!resolved.ok) {
+    return resolved.result;
+  }
+
+  try {
+    const updated = await updateTransaction(user.id, input.id, {
+      accountId: resolved.account.id,
+      categoryId: input.categoryId,
+      type: input.type,
+      label: input.label,
+      amount: input.amount,
+      currency: resolved.account.currency,
+      operationDate: input.operationDate,
+      notes: input.notes,
+    });
+
+    if (!updated) {
+      return rejectedResult(
+        "id",
+        "Opération introuvable : elle a peut-être été supprimée entre-temps.",
+      );
+    }
+  } catch (error) {
+    return unexpectedResult("updateTransaction", error);
   }
 
   revalidatePath("/budget");

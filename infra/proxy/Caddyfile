@@ -1,0 +1,25 @@
+# Local reverse proxy: gives the dashboard a hostname instead of a port.
+#
+# The site address comes from APP_HOST, so this one file covers local use and a
+# server: with an explicit scheme Caddy serves plain HTTP (nothing to trust
+# locally), without one it serves HTTPS with a certificate obtained automatically.
+#
+#   APP_HOST=http://dashboard.localhost -> http://dashboard.localhost      (local)
+#   APP_HOST=dashboard.example.com      -> https://dashboard.example.com   (server)
+#
+# Names under `.localhost` are reserved for loopback and need no hosts entry, so the
+# default below works on a fresh checkout; a name such as `http://dashboard.test` does
+# need one (see the README).
+#
+# Caddy sets X-Forwarded-For, X-Forwarded-Proto and X-Forwarded-Host on its own, and
+# keeps the original Host header: Auth.js builds its callback URLs from it and the
+# Server Actions check that Origin matches Host, so a mismatched host would show up as
+# redirects pointing at a container name or as refused form submissions.
+
+{$APP_HOST:http://dashboard.localhost} {
+	encode zstd gzip
+
+	# The application is the only other service on the network; there is no route to
+	# anything else, which is what keeps this file safe to reuse as a starting point.
+	reverse_proxy app:3000
+}

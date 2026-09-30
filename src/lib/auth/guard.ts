@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
+import { passwordTag } from "@/lib/auth/password";
 import { findOwnerById } from "@/modules/identity/repository";
 
 /**
@@ -13,6 +14,11 @@ import { findOwnerById } from "@/modules/identity/repository";
  * volume, reset, re-seed) issues new identifiers while browsers keep the previous
  * cookie. Such a session is treated as signed out — one indexed lookup — instead
  * of reaching pages that read nothing and writes that fail on a foreign key.
+ *
+ * The same lookup answers a second question: does the token belong to the current
+ * password? It carries a fingerprint of the hash it was issued for (see
+ * `passwordTag`), so changing the password signs out every session opened before
+ * it, on every device, not only the one that made the change.
  */
 export type SessionUser = {
   id: string;
@@ -31,7 +37,15 @@ export async function getSessionUser(): Promise<SessionUser | null> {
   }
 
   // The token proves its signature, not that the owner still exists.
-  if (!(await findOwnerById(id))) {
+  const owner = await findOwnerById(id);
+  if (!owner) {
+    return null;
+  }
+
+  // Nor that it was issued for the password currently in force. A token without a
+  // fingerprint predates this check, and is refused rather than trusted: the cost
+  // is one sign-in.
+  if (!session.passwordTag || session.passwordTag !== passwordTag(owner.passwordHash)) {
     return null;
   }
 

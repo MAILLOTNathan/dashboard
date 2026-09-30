@@ -97,17 +97,22 @@ asked for: a cascade here would silently change what a property is worth.
 - **Categories** carry a kind (`INCOME` or `EXPENSE`), and a transaction may only use
   a category of its own kind — `categoryKindForTransactionType` is the single source
   of that rule, used by the form to filter the list and by the Server Action to refuse
-  a replayed request. A `TRANSFER` takes no category at all: it is neither a receipt
-  nor a cost.
+  a replayed request. A `TRANSFER` takes no category at all: it moves money rather than
+  spending it, so there is nothing to label — its amount still counts in the totals, by its
+  sign (see below).
 
 ## Documented indicator definitions
 
-- `income` — sum of `INCOME` amounts.
+- `income` — sum of `INCOME` amounts, plus the positive `TRANSFER` amounts.
 - `expenses` — negated sum of `EXPENSE` amounts, so it reads as a positive
-  number; reimbursements reduce it.
-- `transfers` — absolute volume of `TRANSFER` amounts.
-- `net` — `income - expenses`. **Transfers are excluded** from income, expenses
-  and net: moving money between two accounts is neither a receipt nor a cost.
+  number; reimbursements reduce it. Negative `TRANSFER` amounts are added here.
+- `transfers` — absolute volume of `TRANSFER` amounts. A **subset** indicator: those
+  amounts are already counted in `income` or in `expenses`, never on top of them, and the
+  volume equals the sum of what they added to the two sides.
+- `net` — `income - expenses`, transfers included. A transfer moves money for real, so it
+  counts by its sign: recording both legs of one internal transfer leaves the net
+  unchanged, while a single leg (money sent to savings, whose destination is not tracked)
+  lowers it.
 - Property totals — each cashflow entry counts once. When an entry is linked to
   a transaction, the transaction is the only source of the amount.
 - GitHub issues — only **open** issues and pull requests are kept, and only the
@@ -148,13 +153,16 @@ asked for: a cascade here would silently change what a property is worth.
   always equals the same number in a table:
   - *Trend over 12 months* — one point per month ending on the selected month, income
     above the axis and expenses below, with the monthly net printed above each column.
-    Transfers are excluded. Months without data are drawn as zeros rather than skipped,
-    so a gap reads as "nothing recorded" and the time axis keeps its scale.
+    Transfers count by their sign, like the totals above. Months without data are drawn as
+    zeros rather than skipped, so a gap reads as "nothing recorded" and the time axis keeps
+    its scale.
   - *Where the money goes* — the selected month per category, largest first, with each
     share of the total. `EXPENSE` by default, `INCOME` through `?breakdown=INCOME`. A
     refund reduces its category, exactly as it reduces the monthly total, so a category
     can legitimately be negative. Transactions without a category keep their own
-    "Sans catégorie" line: dropping them would make the bars fail to add up. The
+    "Sans catégorie" line, and transfers a "Transferts entre comptes" line rather than
+    being merged with them: a transfer has no category by design. Dropping either would
+    make the bars fail to add up. The
     smallest categories are merged into one "Autres" line once the row budget is
     reached, and the total stays exact.
   Charts are plain server-rendered markup, with the exact figures printed next to the

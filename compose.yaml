@@ -1,7 +1,8 @@
 # Local development and first deployment.
 #
 # Default (`docker compose up -d`) starts PostgreSQL only, bound to 127.0.0.1.
-# The full stack (`docker compose --profile full up -d --build`) also runs the app.
+# The full stack (`docker compose --profile full up -d --build`) also runs the app and
+# a small reverse proxy that serves it on APP_HOST instead of a port (see README).
 #
 # PostgreSQL is never published on the public interface: in production only the
 # application container reaches it over the internal network.
@@ -47,12 +48,45 @@ services:
       DATABASE_URL: *database-url
       AUTH_SECRET: ${AUTH_SECRET:?AUTH_SECRET is required}
       AUTH_TRUST_HOST: "true"
+      # The public origin, used by Auth.js to build absolute callback URLs. It cannot
+      # be inferred here: the standalone server would fall back to its own container
+      # name and internal port (http://<container-id>:3000), which no browser can
+      # reach. Keep it identical to the origin you actually browse, and to APP_HOST
+      # when the proxy profile is enabled: cookies are per host, so a mismatch means
+      # signing in on one origin and being unknown on the other.
+      AUTH_URL: ${AUTH_URL:-http://localhost:3000}
       INTEGRATION_ENCRYPTION_KEY: ${INTEGRATION_ENCRYPTION_KEY:?INTEGRATION_ENCRYPTION_KEY is required}
       NEXT_PUBLIC_DEFAULT_CURRENCY: ${NEXT_PUBLIC_DEFAULT_CURRENCY:-EUR}
       NEXT_PUBLIC_DEFAULT_TIME_ZONE: ${NEXT_PUBLIC_DEFAULT_TIME_ZONE:-Europe/Paris}
     # The port is meant to stay behind an HTTPS reverse proxy.
     ports:
       - "127.0.0.1:3000:3000"
+
+  # Serves the application on a hostname instead of a port: the same shape as
+  # production, where a reverse proxy terminates HTTPS in front of the Next.js server.
+  # It belongs to the `full` profile rather than a profile of its own because it
+  # depends on `app`: a second profile only meant that one forgotten flag left the
+  # hostname refusing connections while the rest of the stack looked healthy.
+  proxy:
+    profiles: ["full"]
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_started
+    environment:
+      # Includes the scheme on purpose: `http://` for a local name served over plain
+      # HTTP, a bare hostname for a real one Caddy would get a certificate for.
+      # `.localhost` is reserved for loopback, so the default needs no hosts entry.
+      APP_HOST: ${APP_HOST:-http://dashboard.localhost}
+    ports:
+      - "${PROXY_PORT:-80}:80"
+    volumes:
+      - ./infra/proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and account data: only used when APP_HOST has no scheme, but a
+      # proxy that forgets them re-requests a certificate on every restart.
+      - proxy-data:/data
+      - proxy-config:/config
 
   # One-shot migration runner: applies pending migrations, then exits. Re-running
   # it is a no-op. The app only starts once it has succeeded, so a failed
@@ -94,7 +128,14 @@ services:
       SEED_OWNER_EMAIL: ${SEED_OWNER_EMAIL:?SEED_OWNER_EMAIL is required}
       SEED_OWNER_PASSWORD: ${SEED_OWNER_PASSWORD:?SEED_OWNER_PASSWORD is required}
       SEED_OWNER_NAME: ${SEED_OWNER_NAME:-Proprietaire}
+      # Set to true to overwrite an existing password with SEED_OWNER_PASSWORD again,
+      # which is the way back from a forgotten password. Left false, the seed only
+      # writes the password when it creates the account, so a password changed from
+      # the Compte page survives a restart.
+      SEED_OWNER_FORCE_PASSWORD: ${SEED_OWNER_FORCE_PASSWORD:-false}
     command: ["npx", "prisma", "db", "seed"]
 
 volumes:
   db-data:
+  proxy-data:
+  proxy-config:

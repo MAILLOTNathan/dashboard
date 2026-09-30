@@ -57,7 +57,11 @@ export function CashflowForm({
       notes: "",
     },
   });
-  const { result, submit } = useRecordedAction(form, createCashflowAction);
+  // A charge that comes back every month: keeping what was typed makes the next entry a
+  // small edit rather than a full retype (see `useRecordedAction`).
+  const { result, submit } = useRecordedAction(form, createCashflowAction, {
+    keepValues: true,
+  });
   const { errors, isSubmitting } = form.formState;
 
   const transactionId = useWatch({ control: form.control, name: "transactionId" });

@@ -1,6 +1,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { FormFeedback, SubmitButton, useRecordedAction } from "@/components/forms";
@@ -12,10 +13,11 @@ import {
   type AccountSummary,
   type CategoryKind,
   type CategorySummary,
+  type TransactionFormInitialValues,
   type TransactionFormValues,
   type TransactionType,
 } from "@/modules/budget/domain";
-import { createTransactionAction } from "./actions";
+import { createTransactionAction, updateTransactionAction } from "./actions";
 
 const TYPE_LABELS: Record<TransactionType, string> = {
   INCOME: "Recette",
@@ -29,34 +31,83 @@ const KIND_LABEL: Record<CategoryKind, string> = {
 };
 
 /**
- * Creates a transaction.
+ * Types a transaction, or corrects one.
  *
- * The currency is not asked for: it is the currency of the selected account, and
- * the server reads it from there. The sign is asked for instead, because it
- * carries the meaning (see the hint under the amount).
+ * One component for both, because an edition is the same fields with values already in
+ * them: two components would be the same code twice, and the copies would eventually
+ * disagree about a rule.
+ *
+ * The currency is not asked for: it is the currency of the selected account, and the
+ * server reads it from there. The sign is asked for instead, because it carries the
+ * meaning (see the hint under the amount).
+ *
+ * The label field offers the labels already used (see `buildLabelSuggestions`): typing
+ * the same words every month is the most repetitive part of keeping a budget. The list
+ * is a native `datalist`, so it filters itself as the text is typed, works with the
+ * keyboard, and adds no dependency.
+ *
+ * A successful submission keeps the values in place, so a second line of the same day is
+ * a small edit rather than a full retype.
  */
 export function TransactionForm({
   accounts,
   categories,
+  labelSuggestions,
   today,
+  editing = null,
+  linkedPropertyName = null,
+  cancelHref,
 }: {
   accounts: AccountSummary[];
   categories: CategorySummary[];
+  /** Past labels, already ranked and capped by the budget module. */
+  labelSuggestions: string[];
   today: string;
+  /**
+   * The row being corrected, already reduced to plain strings by the server: a `Decimal`
+   * or a `Date` cannot cross into this component at all.
+   */
+  editing?: TransactionFormInitialValues | null;
+  /** Property whose cashflow reads this transaction, when there is one. */
+  linkedPropertyName?: string | null;
+  /** Where "Annuler" returns to, filters preserved. Used while editing. */
+  cancelHref?: string;
 }) {
+  const isEditing = editing !== null;
+
   const form = useForm<TransactionFormValues>({
     resolver: zodResolver(transactionFormSchema, undefined, { raw: true }),
-    defaultValues: {
-      accountId: accounts[0]?.id ?? "",
-      categoryId: "",
-      type: "EXPENSE",
-      label: "",
-      amount: "",
-      operationDate: today,
-      notes: "",
-    },
+    defaultValues: editing
+      ? {
+          accountId: editing.accountId,
+          categoryId: editing.categoryId,
+          type: editing.type,
+          label: editing.label,
+          amount: editing.amount,
+          operationDate: editing.operationDate,
+          notes: editing.notes,
+        }
+      : {
+          accountId: accounts[0]?.id ?? "",
+          categoryId: "",
+          type: "EXPENSE",
+          label: "",
+          amount: "",
+          operationDate: today,
+          notes: "",
+        },
   });
-  const { result, submit } = useRecordedAction(form, createTransactionAction);
+
+  // The identifier is added here rather than kept in a hidden field: the form values stay
+  // the creation contract, and only the action they are sent to distinguishes the cases.
+  const { result, submit } = useRecordedAction(
+    form,
+    (values) =>
+      editing
+        ? updateTransactionAction({ ...values, id: editing.id })
+        : createTransactionAction(values),
+    { keepValues: true },
+  );
   const { errors, isSubmitting } = form.formState;
   const [droppedCategory, setDroppedCategory] = useState<string | null>(null);
 
@@ -111,6 +162,15 @@ export function TransactionForm({
 
   return (
     <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" noValidate>
+      {linkedPropertyName ? (
+        <div className="sm:col-span-2 lg:col-span-3">
+          <Notice tone="warning">
+            Cette opération est rattachée au flux du bien « {linkedPropertyName} » : modifier
+            son montant change aussi les totaux de l&apos;immobilier.
+          </Notice>
+        </div>
+      ) : null}
+
       <Field label="Compte" htmlFor="transaction-account" error={errors.accountId?.message}>
         <select
           id="transaction-account"
@@ -152,13 +212,30 @@ export function TransactionForm({
         />
       </Field>
 
-      <Field label="Libellé" htmlFor="transaction-label" error={errors.label?.message}>
+      <Field
+        label="Libellé"
+        htmlFor="transaction-label"
+        error={errors.label?.message}
+        hint={
+          labelSuggestions.length > 0
+            ? "Vos libellés précédents sont proposés : la liste se filtre à la saisie."
+            : undefined
+        }
+      >
         <input
           id="transaction-label"
+          list="transaction-label-suggestions"
           className={inputClass}
           autoComplete="off"
           {...form.register("label")}
         />
+        {labelSuggestions.length > 0 ? (
+          <datalist id="transaction-label-suggestions">
+            {labelSuggestions.map((label) => (
+              <option key={label} value={label} />
+            ))}
+          </datalist>
+        ) : null}
       </Field>
 
       <Field
@@ -235,12 +312,28 @@ export function TransactionForm({
         ) : null}
       </div>
 
-      <div className="sm:col-span-2 lg:col-span-3">
-        <SubmitButton label="Enregistrer l'opération" pending={isSubmitting} />
+      <div className="flex flex-wrap items-center gap-2 sm:col-span-2 lg:col-span-3">
+        <SubmitButton
+          label={isEditing ? "Enregistrer les modifications" : "Enregistrer l'opération"}
+          pending={isSubmitting}
+        />
+        {isEditing && cancelHref ? (
+          <Link
+            href={cancelHref}
+            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            Annuler
+          </Link>
+        ) : null}
       </div>
 
       <div className="sm:col-span-2 lg:col-span-3">
-        <FormFeedback result={result} successMessage="Opération enregistrée." />
+        <FormFeedback
+          result={result}
+          successMessage={
+            isEditing ? "Modification enregistrée." : "Opération enregistrée."
+          }
+        />
       </div>
     </form>
   );

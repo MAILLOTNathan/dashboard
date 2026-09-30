@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { compare, hash } from "bcryptjs";
 
 /**
@@ -30,4 +31,17 @@ export async function verifyPassword(
 /** Performs a comparison that always fails, purely to keep the timing constant. */
 export async function burnPasswordComparison(plainPassword: string): Promise<void> {
   await compare(plainPassword, ABSENT_USER_HASH);
+}
+
+/**
+ * Short, non-reversible fingerprint of a stored hash.
+ *
+ * A session token carries the fingerprint it was issued for, and the guard
+ * recomputes it from the row it already reads. A password change therefore signs
+ * every session out, including those opened in another browser, without a
+ * revocation table and without `node:crypto` in the edge bundle: only the digest
+ * of a bcrypt hash leaves the server, never the hash itself.
+ */
+export function passwordTag(passwordHash: string): string {
+  return createHash("sha256").update(passwordHash).digest("hex").slice(0, 16);
 }

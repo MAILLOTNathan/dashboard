@@ -12,7 +12,9 @@ import { computeMonthlyTotals, type MonthlyTotals } from "./totals";
  * documented aggregation rules rather than inventing its own, so a number in a
  * chart always equals the same number in a table:
  *
- * - transfers are excluded from income, expenses and net;
+ * - transfers count by their sign, exactly as in `computeMonthlyTotals`: a negative one
+ *   is an expense, a positive one is income, and the breakdown keeps them in a line of
+ *   their own because a transfer has no category by design;
  * - expenses are reported positive, and a refund (a positive amount on an EXPENSE
  *   transaction) reduces them;
  * - currencies are never mixed: the caller passes the transactions of one currency.
@@ -78,6 +80,33 @@ export type CategoryBreakdown = {
 export const UNCATEGORISED_KEY = "uncategorized";
 export const UNCATEGORISED_LABEL = "Sans catégorie";
 
+export const TRANSFERS_KEY = "transfers";
+export const TRANSFERS_LABEL = "Transferts entre comptes";
+
+/**
+ * Whether a transaction belongs to the requested side of the ledger.
+ *
+ * A transfer counts by its sign, exactly as it does in `computeMonthlyTotals`: a negative
+ * one is money leaving and belongs to the expense side, a positive one to the income side.
+ * It then gets a line of its own rather than being merged into "Sans catégorie": a
+ * transfer carries no category **by design**, and calling it uncategorised would suggest a
+ * label is missing.
+ */
+function countsTowards(transaction: TransactionRecord, kind: TransactionType): boolean {
+  if (transaction.type === kind) {
+    return true;
+  }
+
+  if (transaction.type !== "TRANSFER") {
+    return false;
+  }
+
+  // Zero is deliberately neither: it would only add an empty line to the chart.
+  return kind === "EXPENSE"
+    ? transaction.amount.isNegative()
+    : transaction.amount.greaterThan(0);
+}
+
 /**
  * Where the money went, per category, for one kind of transaction.
  *
@@ -99,15 +128,20 @@ export function buildCategoryBreakdown(
   let total = new Decimal(0);
 
   for (const transaction of transactions) {
-    if (transaction.type !== kind) {
+    if (!countsTowards(transaction, kind)) {
       continue;
     }
 
+    const isTransfer = transaction.type === "TRANSFER";
+
     // An expense is stored negative: the magnitude is its negated amount, which
-    // makes a refund reduce its category exactly as it reduces the monthly total.
+    // makes a refund reduce its category exactly as it reduces the monthly total. A
+    // transfer follows the same rule on the side its sign put it on.
     const contribution = kind === "EXPENSE" ? transaction.amount.negated() : transaction.amount;
-    const key = transaction.categoryId ?? UNCATEGORISED_KEY;
-    const label = transaction.categoryName ?? UNCATEGORISED_LABEL;
+    const key = isTransfer ? TRANSFERS_KEY : (transaction.categoryId ?? UNCATEGORISED_KEY);
+    const label = isTransfer
+      ? TRANSFERS_LABEL
+      : (transaction.categoryName ?? UNCATEGORISED_LABEL);
 
     const bucket = buckets.get(key) ?? { label, amount: new Decimal(0) };
     bucket.amount = bucket.amount.plus(contribution);

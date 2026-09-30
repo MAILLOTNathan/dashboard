@@ -1,6 +1,7 @@
 import Decimal from "decimal.js";
 import { z } from "zod";
-import type { Currency } from "@/lib/money";
+import { toDateOnlyString } from "@/lib/dates";
+import { toDecimalString, type Currency } from "@/lib/money";
 import {
   amount,
   currencyCode,
@@ -174,6 +175,66 @@ export const transactionFormSchema = transactionInputSchema.omit({ currency: tru
 
 export type TransactionFormValues = z.input<typeof transactionFormSchema>;
 export type ValidatedTransactionForm = z.output<typeof transactionFormSchema>;
+
+/**
+ * Payload for editing an existing transaction.
+ *
+ * The creation fields plus the identifier of the row, and nothing else: an edition is
+ * not a second kind of transaction, and a contract of its own would let the two drift
+ * apart until an edition accepts what a creation refuses. No owner identifier travels
+ * here — the action scopes the update with the session, so a replayed identifier cannot
+ * reach another account.
+ */
+export const transactionUpdateSchema = transactionFormSchema.extend({
+  id: z.string().trim().min(1, "Identifiant manquant."),
+});
+
+export type TransactionUpdateValues = z.input<typeof transactionUpdateSchema>;
+export type ValidatedTransactionUpdate = z.output<typeof transactionUpdateSchema>;
+
+/**
+ * A transaction prepared for the entry form.
+ *
+ * Strings only, and deliberately so: a `Decimal` or a `Date` cannot cross the
+ * server/client boundary — React refuses to serialise them, and the client would receive
+ * an object whose methods are gone (`value.toFixed is not a function`). The conversion
+ * happens on the server, next to the value that actually holds the precision.
+ */
+export type TransactionFormInitialValues = {
+  id: string;
+  accountId: string;
+  categoryId: string;
+  type: TransactionType;
+  label: string;
+  /** Written the way the amount parser reads it back, so an edition changes no cent. */
+  amount: string;
+  /** `YYYY-MM-DD`, the only form a date input understands. */
+  operationDate: string;
+  notes: string;
+};
+
+/**
+ * Maps a stored row to what the form can actually be given.
+ *
+ * The two conversions are the whole point: an exact decimal becomes a string the parser
+ * accepts, and a calendar day becomes the date input's format. Everything the form does
+ * not edit (account and category names, a currency, a source reference) is left out
+ * rather than passed along and ignored.
+ */
+export function toTransactionFormInitialValues(
+  record: TransactionRecord,
+): TransactionFormInitialValues {
+  return {
+    id: record.id,
+    accountId: record.accountId,
+    categoryId: record.categoryId ?? "",
+    type: record.type,
+    label: record.label,
+    amount: toDecimalString(record.amount),
+    operationDate: toDateOnlyString(record.operationDate),
+    notes: record.notes ?? "",
+  };
+}
 
 /**
  * A transaction amount must stay consistent with its type: an income is

@@ -14,10 +14,14 @@ provider adapters) is implemented.
 
 Working today:
 
-- Owner authentication (Auth.js credentials, no public sign-up).
+- Owner authentication (Auth.js credentials, no public sign-up), with a **Compte**
+  page to change the owner password.
 - Personal budget: accounts, categories, transactions entered from the budget
   page, monthly totals per currency, filters, CSV export, deletion with confirmation,
-  and two charts (a 12-month trend and the month's spending per category).
+  correction of an existing operation (the row reopens in the entry form, filters kept)
+  and two charts (a 12-month trend and the month's spending per category). Submitted
+  values stay in the transaction and cashflow forms, so a second line is a small edit;
+  the one-shot forms (account, category, property, password) clear themselves.
 - Real estate: properties and cashflow entries entered from the real-estate
   page, occupancy status, totals, due dates.
 - GitHub / GitLab connections: read-only adapters, encrypted tokens, manual
@@ -30,8 +34,9 @@ Working today:
 
 Not implemented yet:
 
-- Editing an existing row: a row can be created or deleted, not modified in place
-  (delete it and enter it again). The budget view is a table, not an editable grid.
+- The budget view is a table, not an editable grid: correcting a line means reopening it
+  in the entry form, not typing in the cell. Only transactions can be edited — accounts,
+  categories and properties can still only be created, never modified.
 - Accounts, categories and properties cannot be deleted yet; only transactions can.
 - A scheduler entry point for automatic synchronisation (the function exists and
   is idempotent; the trigger is not shipped).
@@ -75,13 +80,18 @@ docker compose --profile full up -d --build
 ```
 
 The `migrate` service applies pending migrations, then the `seed` service creates
-or updates the owner account from `SEED_OWNER_*`. Both exit; `app` starts only
-once they succeeded, so a failed migration or a missing account never boots a
-server. Inspect them with `docker compose --profile full logs migrate seed`.
+the owner account from `SEED_OWNER_*`, or refreshes the name of the one that exists.
+Both exit; `app` starts only once they succeeded, so a failed migration or a missing
+account never boots a server. Inspect them with
+`docker compose --profile full logs migrate seed`.
 
-The seed is idempotent and runs on every `up`: `.env` is the source of truth for
-the owner password. Change `SEED_OWNER_PASSWORD` and run `up -d` again to rotate
-it, or run that step alone with `docker compose --profile full run --rm seed`.
+The seed is idempotent and runs on every `up`. It writes `SEED_OWNER_PASSWORD` when
+it creates the account, then leaves the stored hash alone: a password changed from
+the **Compte** page survives a restart. To put the environment value back in force —
+which is also how a forgotten password is replaced — set
+`SEED_OWNER_FORCE_PASSWORD=true` and run `up -d` again, or run that step alone with
+`docker compose --profile full run --rm seed`. The seed prints which of the two it
+did.
 
 Without a profile, `docker compose up -d` starts PostgreSQL only.
 
@@ -90,6 +100,96 @@ weighing about 210 MB with its engines, and it is not traced into the standalone
 server output. Migrations and the seed run from the dedicated `db-tools` stage
 (see `Dockerfile`), which also has the `tsx` runner and the source modules the
 seed imports.
+
+### Changing the password
+
+The **Compte** page (`/account`) shows the owner's address and name, and changes the
+password. Three rules are enforced on the server, not in the interface:
+
+- The current password is required and verified with bcrypt before anything is
+  written, so an open session alone cannot lock the owner out of their own data.
+- The new password must be at least 12 characters, and at most 72 bytes: bcrypt reads
+  no more than 72 bytes, so a longer one would quietly open the same account as its
+  own first 72 bytes. An accented letter counts for two bytes.
+- A successful change signs **every** session out, this one included. Session tokens
+  carry a fingerprint of the password hash they were issued for, and `getSessionUser`
+  compares it with the stored row, so a change made on one device also disconnects the
+  others. Tokens issued before this check existed are refused once and require one
+  sign-in.
+
+Because the password then differs from `SEED_OWNER_PASSWORD`, the seed no longer
+overwrites an existing hash — see the note above. A forgotten password is replaced
+from the server, with `SEED_OWNER_FORCE_PASSWORD=true`; there is no self-service
+recovery, on purpose.
+
+### A hostname instead of a port
+
+The stack can also be served through a small reverse proxy, so the URL is
+`http://dashboard.localhost` rather than `http://localhost:3000`:
+
+```sh
+# AUTH_URL and APP_HOST are already set to that name in .env
+docker compose --profile full up -d --build
+```
+
+With `APP_HOST=http://dashboard.localhost` and `AUTH_URL=http://dashboard.localhost`,
+the proxy and the application agree on one origin.
+
+No hosts entry is needed for that name: `.localhost` is reserved for loopback, so
+current browsers and `curl` resolve it to this machine. To use another name, create the
+entry and change it in both places — it is the same origin in two roles:
+
+```sh
+echo "127.0.0.1 budget.etib.test" | sudo tee -a /etc/hosts
+# then set APP_HOST=http://budget.etib.test and AUTH_URL=http://budget.etib.test
+```
+
+Two failure modes are worth recognising, because neither looks like an error:
+
+- A name the proxy was not configured for gets an **empty page**, not a 404. A blank
+  tab normally means the address you typed and `APP_HOST` differ.
+- A mismatched `AUTH_URL` signs you in on a different origin than the one you typed,
+  because the session cookie belongs to a single host.
+
+`APP_HOST` decides the scheme. `http://dashboard.localhost` serves plain HTTP, which is
+what you want locally: there is no certificate to install. A bare hostname
+(`APP_HOST=dashboard.example.com`) makes the same file serve HTTPS with an
+automatically obtained certificate, which is what you want on a server.
+
+Two reasons to prefer this over `localhost:3000`:
+
+- **Auth.js needs to be told its public origin.** The standalone server otherwise
+  derives absolute URLs from its own container identity and internal port
+  (`http://<container-id>:3000`), which no browser can reach: the sign-in callback
+  would point there. `AUTH_URL` is what makes that origin explicit.
+- **Cookies are per host**, so a session opened on `dashboard.localhost` is not the
+  same as one on `localhost:3000`. Pick one origin and stay on it: `AUTH_URL` and the
+  address you type must match, or you will be signed out on one of them. Cookies ignore
+  the port, so `dashboard.localhost` and `dashboard.localhost:3000` do share a session.
+
+The proxy also keeps `Host` and `Origin` aligned, which is what the Server Actions
+check before accepting a form submission.
+
+Why these names: `.localhost` (RFC 6761) and `.test` (RFC 2606) are both reserved and
+can never resolve publicly — unlike `.local`, which is mDNS territory, or an invented
+name that could exist one day. `.localhost` has the advantage of needing no
+configuration at all, which is why the stack defaults to it.
+
+The proxy belongs to the `full` profile, so it starts and stops with the application:
+
+```sh
+docker compose --profile full logs proxy
+docker compose --profile full ps
+docker compose --profile full down
+```
+
+It used to live in a profile of its own, which meant a forgotten flag left the hostname
+refusing connections while `app` and `db` looked healthy — the proxy depends on `app`, so
+the two belong together. `docker compose up -d` with no profile still starts PostgreSQL
+only.
+
+Publishing port 80 is now part of the full stack. Set `PROXY_PORT` if something else
+already holds it.
 
 ## Scripts
 
@@ -126,8 +226,9 @@ compose.yaml
 ## Conventions worth knowing
 
 - Money uses exact decimals, never floats. Negative amounts are outflows.
-- Monthly balance **excludes transfers between accounts**; their volume is shown
-  separately. Every indicator definition is documented in
+- A transfer counts as a real movement: the monthly balance **includes** it, on the side its
+  sign puts it (negative → expenses, positive → income), and its volume is shown separately
+  as a subset. Every indicator definition is documented in
   `docs/architecture/overview.md`.
 - Operation dates are calendar days; instants are stored in UTC.
 - Secrets stay server-side. `.env` is git-ignored; only `.env.example` is

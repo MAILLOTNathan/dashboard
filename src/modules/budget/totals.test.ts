@@ -54,7 +54,7 @@ describe("computeMonthlyTotals", () => {
     expect(totals.net.toFixed(2)).toBe("1299.50");
   });
 
-  it("excludes transfers from income, expenses and net, but still reports their volume", () => {
+  it("counts a transfer on the side its sign puts it, and reports its volume apart", () => {
     const totals = computeMonthlyTotals([
       transaction({ type: "INCOME", amount: "1000.00" }),
       transaction({ id: "tx-2", type: "EXPENSE", amount: "-300.00" }),
@@ -62,11 +62,39 @@ describe("computeMonthlyTotals", () => {
       transaction({ id: "tx-4", type: "TRANSFER", amount: "400.00" }),
     ]);
 
-    expect(totals.income.toFixed(2)).toBe("1000.00");
-    expect(totals.expenses.toFixed(2)).toBe("300.00");
-    // Moving 400 to a savings account is neither income nor expense.
+    // Both legs of one internal transfer: each side takes its own leg, so the net — what
+    // actually happened to the accounts — does not move.
+    expect(totals.income.toFixed(2)).toBe("1400.00");
+    expect(totals.expenses.toFixed(2)).toBe("700.00");
     expect(totals.net.toFixed(2)).toBe("700.00");
+    // `transfers` is a subset, not a fifth figure to add: it equals the sum of what the
+    // transfers put on the two sides.
     expect(totals.transfers.toFixed(2)).toBe("800.00");
+  });
+
+  it("lowers the balance for a transfer recorded on one side only", () => {
+    // Money sent to a savings account whose destination is not tracked: it did leave, so
+    // the month says so. Excluding it by principle used to hide exactly this.
+    const totals = computeMonthlyTotals([
+      transaction({ type: "INCOME", amount: "2500.00" }),
+      transaction({ id: "tx-2", type: "TRANSFER", amount: "-1000.00" }),
+    ]);
+
+    expect(totals.income.toFixed(2)).toBe("2500.00");
+    expect(totals.expenses.toFixed(2)).toBe("1000.00");
+    expect(totals.net.toFixed(2)).toBe("1500.00");
+  });
+
+  it("lets a zero transfer change no total", () => {
+    const totals = computeMonthlyTotals([
+      transaction({ type: "INCOME", amount: "100.00" }),
+      transaction({ id: "tx-2", type: "TRANSFER", amount: "0.00" }),
+    ]);
+
+    expect(totals.income.toFixed(2)).toBe("100.00");
+    expect(totals.expenses.toFixed(2)).toBe("0.00");
+    expect(totals.net.toFixed(2)).toBe("100.00");
+    expect(totals.transfers.toFixed(2)).toBe("0.00");
   });
 
   it("treats a positive amount on an expense as a reimbursement", () => {

@@ -8,6 +8,7 @@ const LINKS = [
   { href: "/budget", label: "Budget" },
   { href: "/real-estate", label: "Immobilier" },
   { href: "/integrations", label: "Intégrations" },
+  { href: "/account", label: "Compte" },
 ] as const;
 
 /** Navigation only: no sensitive data and no authorisation decision here. */

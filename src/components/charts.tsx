@@ -74,7 +74,7 @@ export function MonthlyTrendChart({
         role="img"
         aria-label={`Recettes et dépenses par mois, de ${points[0]?.label ?? ""} à ${
           points[points.length - 1]?.label ?? ""
-        }. Les transferts entre comptes sont exclus.`}
+        }. Les transferts entre comptes comptent selon leur signe.`}
       >
         {/* Gridlines: the axis itself, then the peak on each side. */}
         <line

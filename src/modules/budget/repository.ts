@@ -8,6 +8,7 @@ import type {
   TransactionRecord,
   TransactionType,
 } from "./domain";
+import type { LabelUsage } from "./suggestions";
 
 /**
  * Budget persistence.
@@ -57,6 +58,63 @@ export async function listCategories(userId: string): Promise<CategorySummary[]>
   }));
 }
 
+/**
+ * Columns every transaction read shares.
+ *
+ * The table and the edition form must show the same row, so the projection lives in one
+ * place: two `select` clauses that drift apart are how a field ends up editable in one
+ * view and missing from the other.
+ */
+const TRANSACTION_SELECT = {
+  id: true,
+  type: true,
+  amount: true,
+  currency: true,
+  operationDate: true,
+  label: true,
+  accountId: true,
+  categoryId: true,
+  notes: true,
+  externalRef: true,
+  account: { select: { name: true } },
+  category: { select: { name: true } },
+} as const;
+
+/** Declared structurally, so the mapper does not depend on the generated client type. */
+type TransactionRow = {
+  id: string;
+  type: string;
+  amount: { toString(): string };
+  currency: string;
+  operationDate: Date;
+  label: string;
+  accountId: string;
+  categoryId: string | null;
+  notes: string | null;
+  externalRef: string | null;
+  account: { name: string };
+  category: { name: string } | null;
+};
+
+function toTransactionRecord(row: TransactionRow): TransactionRecord {
+  return {
+    id: row.id,
+    type: row.type as TransactionType,
+    // Prisma exposes a numeric type: converting through its string form keeps the
+    // value exact and gives the domain a plain decimal.js instance.
+    amount: new Decimal(row.amount.toString()),
+    currency: assertCurrency(row.currency),
+    operationDate: row.operationDate,
+    label: row.label,
+    accountId: row.accountId,
+    accountName: row.account.name,
+    categoryId: row.categoryId,
+    categoryName: row.category?.name ?? null,
+    notes: row.notes,
+    externalRef: row.externalRef,
+  };
+}
+
 export async function listTransactions(
   userId: string,
   filters: TransactionFilters = {},
@@ -82,42 +140,73 @@ export async function listTransactions(
     },
     orderBy: [{ operationDate: "desc" }, { createdAt: "desc" }],
     take: filters.take ?? DEFAULT_PAGE_SIZE,
-    select: {
-      id: true,
-      type: true,
-      amount: true,
-      currency: true,
-      operationDate: true,
-      label: true,
-      accountId: true,
-      categoryId: true,
-      notes: true,
-      externalRef: true,
-      account: { select: { name: true } },
-      category: { select: { name: true } },
-    },
+    select: TRANSACTION_SELECT,
   });
 
-  return rows.map((row) => ({
-    id: row.id,
-    type: row.type as TransactionType,
-    // Prisma exposes a numeric type: converting through its string form keeps the
-    // value exact and gives the domain a plain decimal.js instance.
-    amount: new Decimal(row.amount.toString()),
-    currency: assertCurrency(row.currency),
-    operationDate: row.operationDate,
-    label: row.label,
-    accountId: row.accountId,
-    accountName: row.account.name,
-    categoryId: row.categoryId,
-    categoryName: row.category?.name ?? null,
-    notes: row.notes,
-    externalRef: row.externalRef,
-  }));
+  return rows.map(toTransactionRecord);
+}
+
+/**
+ * One transaction, scoped to its owner.
+ *
+ * Read before an edition so the form shows what the row actually holds, rather than what
+ * a query string asked for: an identifier belonging to someone else returns nothing.
+ */
+export async function findTransaction(
+  userId: string,
+  transactionId: string,
+): Promise<TransactionRecord | null> {
+  const row = await getPrisma().transaction.findFirst({
+    where: { id: transactionId, userId },
+    select: TRANSACTION_SELECT,
+  });
+
+  return row ? toTransactionRecord(row) : null;
 }
 
 export async function countTransactions(userId: string): Promise<number> {
   return getPrisma().transaction.count({ where: { userId } });
+}
+
+/**
+ * Distinct labels the owner already typed, bounded before being ranked.
+ *
+ * The bound is on the most used labels on purpose: the ranking in
+ * `buildLabelSuggestions` keeps twenty of them, so reading every distinct label of a
+ * long history would fetch rows that can never be shown.
+ */
+export const LABEL_HISTORY_LIMIT = 200;
+
+/**
+ * Labels already used, with how often and how recently.
+ *
+ * Grouped in the database rather than read from the last page of transactions: a label
+ * used every month for a year would otherwise be pushed out by one busy week, and a
+ * suggestion list that forgets the rent is worse than no list at all.
+ *
+ * Case is not folded here. Near-duplicate spellings are merged in the module, which is
+ * the only place that decides what counts as the same label.
+ */
+export async function listLabelHistory(
+  userId: string,
+  limit: number = LABEL_HISTORY_LIMIT,
+): Promise<LabelUsage[]> {
+  const rows = await getPrisma().transaction.groupBy({
+    by: ["label"],
+    where: { userId },
+    _count: { _all: true },
+    _max: { operationDate: true },
+    orderBy: { _count: { label: "desc" } },
+    take: limit,
+  });
+
+  return rows.map((row) => ({
+    label: row.label,
+    usageCount: row._count._all,
+    // Prisma types an aggregate as nullable even though `operationDate` is NOT NULL.
+    // The fallback only affects the ordering of a case that cannot occur.
+    lastUsedOn: row._max.operationDate ?? new Date(0),
+  }));
 }
 
 /**
@@ -287,4 +376,46 @@ export async function createTransaction(input: {
     },
     select: { id: true },
   });
+}
+
+/** Fields an edition may replace. `externalRef` is absent on purpose. */
+export type TransactionWrite = {
+  accountId: string;
+  categoryId: string | null;
+  type: TransactionType;
+  label: string;
+  amount: Decimal;
+  currency: Currency;
+  operationDate: Date;
+  notes: string | null;
+};
+
+/**
+ * Replaces the editable fields of one transaction.
+ *
+ * `updateMany` rather than `update`, for the same reason as the deletion: the owner
+ * filter belongs in the `where` clause, and the number of written rows tells "edited"
+ * from "gone or not yours" without a second read. `externalRef` is left alone, so a
+ * corrected import stays marked as an import.
+ */
+export async function updateTransaction(
+  userId: string,
+  transactionId: string,
+  input: TransactionWrite,
+): Promise<boolean> {
+  const { count } = await getPrisma().transaction.updateMany({
+    where: { id: transactionId, userId },
+    data: {
+      accountId: input.accountId,
+      categoryId: input.categoryId,
+      type: input.type,
+      label: input.label.trim(),
+      amount: input.amount.toFixed(2),
+      currency: input.currency,
+      operationDate: input.operationDate,
+      notes: input.notes,
+    },
+  });
+
+  return count === 1;
 }

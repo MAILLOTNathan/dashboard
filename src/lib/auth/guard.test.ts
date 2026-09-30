@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { passwordTag } from "./password";
 
 const authMock = vi.fn();
 const findOwnerByIdMock = vi.fn();
@@ -23,6 +24,12 @@ const owner = {
   passwordHash: "$2b$12$not-a-real-hash",
 };
 
+/**
+ * Fingerprint derived from the stored hash. It is what ties a token to the password
+ * in force, so it is recomputed here rather than hard-coded.
+ */
+const CURRENT_TAG = passwordTag(owner.passwordHash);
+
 describe("getSessionUser", () => {
   beforeEach(() => {
     authMock.mockReset();
@@ -44,7 +51,10 @@ describe("getSessionUser", () => {
   });
 
   it("returns the owner when the row still exists", async () => {
-    authMock.mockResolvedValue({ user: { id: owner.id, email: owner.email, name: owner.name } });
+    authMock.mockResolvedValue({
+      user: { id: owner.id, email: owner.email, name: owner.name },
+      passwordTag: CURRENT_TAG,
+    });
     findOwnerByIdMock.mockResolvedValue(owner);
 
     expect(await getSessionUser()).toEqual({
@@ -61,6 +71,27 @@ describe("getSessionUser", () => {
     // fails on a foreign key, which is unreadable for the owner.
     authMock.mockResolvedValue({ user: { id: "recreated-away", email: owner.email } });
     findOwnerByIdMock.mockResolvedValue(null);
+
+    expect(await getSessionUser()).toBeNull();
+  });
+
+  it("treats a session issued before a password change as signed out", async () => {
+    // The row is still there, but its hash is no longer the one this token was
+    // issued for: the password was changed elsewhere, on another device.
+    authMock.mockResolvedValue({
+      user: { id: owner.id, email: owner.email },
+      passwordTag: passwordTag("$2b$12$a-previous-and-different-hash"),
+    });
+    findOwnerByIdMock.mockResolvedValue(owner);
+
+    expect(await getSessionUser()).toBeNull();
+  });
+
+  it("refuses a token that carries no fingerprint, rather than trusting it", async () => {
+    // Tokens issued before this check existed cannot be tied to the current
+    // password: one extra sign-in is the price of refusing them.
+    authMock.mockResolvedValue({ user: { id: owner.id, email: owner.email } });
+    findOwnerByIdMock.mockResolvedValue(owner);
 
     expect(await getSessionUser()).toBeNull();
   });
@@ -86,7 +117,10 @@ describe("requireUser", () => {
   });
 
   it("lets the owner through", async () => {
-    authMock.mockResolvedValue({ user: { id: owner.id, email: owner.email } });
+    authMock.mockResolvedValue({
+      user: { id: owner.id, email: owner.email },
+      passwordTag: CURRENT_TAG,
+    });
     findOwnerByIdMock.mockResolvedValue(owner);
 
     await expect(requireUser()).resolves.toMatchObject({ id: owner.id });

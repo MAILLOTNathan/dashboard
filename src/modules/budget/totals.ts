@@ -14,11 +14,18 @@ import type { TransactionRecord } from "./domain";
  *                EXPENSE transaction is a reimbursement and reduces the expenses;
  *                a month with more reimbursements than expenses legitimately
  *                reports a negative `expenses`.
- * - `transfers`: absolute volume of TRANSFER transactions. Moving money between
- *                two accounts is not income and not an expense, so transfers are
- *                **excluded** from `income`, from `expenses` and from `net`.
- *                They are reported separately so the volume stays visible.
- * - `net`      : `income - expenses`. Transfers never contribute to it.
+ * - `transfers`: absolute volume of TRANSFER transactions. It is a **subset**: those
+ *                amounts are already part of `income` or of `expenses` (see below), never
+ *                an extra figure to add on top of them.
+ * - `net`      : `income - expenses`, transfers included.
+ *
+ * A transfer moves money for real, so it counts — by its sign. A negative TRANSFER is
+ * money leaving and counts as an expense; a positive one is money arriving and counts as
+ * income. Recording both legs of one internal transfer therefore leaves `net` unchanged
+ * while showing up in both cards, and recording a single leg (money sent to savings, whose
+ * destination is not tracked) lowers the balance — which is the intent. The absolute
+ * volume equals the sum of what the transfers added to the two sides, so the `Transferts`
+ * card reconciles with the cards next to it.
  * - An empty month returns zeros, not a missing value: the caller distinguishes
  *   "no data" from "not connected" with the connection state, not with this number.
  *
@@ -58,9 +65,19 @@ export function computeMonthlyTotals(
       case "EXPENSE":
         expenses = expenses.plus(transaction.amount.negated());
         break;
-      case "TRANSFER":
+      case "TRANSFER": {
+        // The side is decided by the sign, not by the type of the row: a transfer is a
+        // real movement, so it lands in one of the two branches above. A zero transfer
+        // changes no total and is only counted in the volume.
         transfers = transfers.plus(transaction.amount.abs());
+
+        if (transaction.amount.isNegative()) {
+          expenses = expenses.plus(transaction.amount.abs());
+        } else if (transaction.amount.greaterThan(0)) {
+          income = income.plus(transaction.amount);
+        }
         break;
+      }
     }
   }
 

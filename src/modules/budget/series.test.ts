@@ -1,7 +1,7 @@
 import Decimal from "decimal.js";
 import { describe, expect, it } from "vitest";
 import type { TransactionRecord, TransactionType } from "./domain";
-import { buildCategoryBreakdown, buildMonthlySeries, UNCATEGORISED_LABEL } from "./series";
+import { buildCategoryBreakdown, buildMonthlySeries, TRANSFERS_LABEL, UNCATEGORISED_LABEL } from "./series";
 
 /**
  * Fictitious transactions only. Dates are calendar days at UTC midnight, like every
@@ -68,7 +68,7 @@ describe("buildMonthlySeries", () => {
     expect(series[0].totals.transactionCount).toBe(0);
   });
 
-  it("excludes transfers from income and expenses, as the monthly totals do", () => {
+  it("counts a transfer on the side its sign puts it, as the monthly totals do", () => {
     const series = buildMonthlySeries(
       [
         transaction({ amount: "-300.00", operationDate: "2026-09-04", type: "TRANSFER" }),
@@ -77,9 +77,11 @@ describe("buildMonthlySeries", () => {
       ["2026-09"],
     );
 
+    // The 300 that left the account is real money gone from the month, and the volume is
+    // still reported on its own line.
     expect(series[0].totals.transfers.toFixed(2)).toBe("300.00");
-    expect(series[0].totals.expenses.toFixed(2)).toBe("10.00");
-    expect(series[0].totals.net.toFixed(2)).toBe("-10.00");
+    expect(series[0].totals.expenses.toFixed(2)).toBe("310.00");
+    expect(series[0].totals.net.toFixed(2)).toBe("-310.00");
   });
 
   it("lets a refund reduce the expenses of its month", () => {
@@ -96,6 +98,34 @@ describe("buildMonthlySeries", () => {
 });
 
 describe("buildCategoryBreakdown", () => {
+  it("keeps transfers on their own line rather than calling them uncategorised", () => {
+    const breakdown = buildCategoryBreakdown(
+      [
+        transaction({ amount: "-30.00", operationDate: "2026-09-02" }),
+        transaction({ amount: "-70.00", operationDate: "2026-09-03", type: "TRANSFER" }),
+        // A positive transfer belongs to the other side: it must not show up here.
+        transaction({ amount: "500.00", operationDate: "2026-09-04", type: "TRANSFER" }),
+      ],
+      { kind: "EXPENSE" },
+    );
+
+    expect(breakdown.total.toFixed(2)).toBe("100.00");
+    expect(breakdown.entries.map((entry) => [entry.label, entry.amount.toFixed(2)])).toEqual([
+      [TRANSFERS_LABEL, "70.00"],
+      [UNCATEGORISED_LABEL, "30.00"],
+    ]);
+  });
+
+  it("puts a positive transfer on the income side", () => {
+    const breakdown = buildCategoryBreakdown(
+      [transaction({ amount: "500.00", operationDate: "2026-09-04", type: "TRANSFER" })],
+      { kind: "INCOME" },
+    );
+
+    expect(breakdown.total.toFixed(2)).toBe("500.00");
+    expect(breakdown.entries.map((entry) => entry.label)).toEqual([TRANSFERS_LABEL]);
+  });
+
   it("adds up the expenses per category, largest first", () => {
     const breakdown = buildCategoryBreakdown(
       [

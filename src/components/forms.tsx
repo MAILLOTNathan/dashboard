@@ -9,14 +9,22 @@ import type { ActionResult } from "@/lib/actions";
 /**
  * Shared submit handling for the write forms.
  *
- * A successful result refreshes the server-rendered tables and clears the form so
- * the next entry can be typed straight away. An invalid result is mapped back onto
- * the fields: the browser already validates with the same schema, so it only
- * happens for a request that did not come from the rendered form.
+ * A successful result refreshes the server-rendered tables. What happens to the fields
+ * is a deliberate choice per form, because the two cases pull in opposite directions:
+ *
+ * - A repeated entry (a transaction, a monthly charge) keeps what was typed, so the next
+ *   line is a small edit rather than a full retype.
+ * - A one-shot creation (an account, a category, a property) clears itself, because a
+ *   leftover value in a "name" field is a trap rather than a shortcut.
+ *
+ * An invalid result is mapped back onto the fields: the browser already validates with
+ * the same schema, so it only happens for a request that did not come from the rendered
+ * form.
  */
 export function useRecordedAction<TValues extends FieldValues>(
   form: UseFormReturn<TValues>,
   action: (values: TValues) => Promise<ActionResult>,
+  options: { keepValues?: boolean } = {},
 ): { result: ActionResult | null; submit: (event?: React.BaseSyntheticEvent) => Promise<void> } {
   const router = useRouter();
   const [result, setResult] = useState<ActionResult | null>(null);
@@ -37,7 +45,14 @@ export function useRecordedAction<TValues extends FieldValues>(
     setResult(outcome);
 
     if (outcome.status === "ok") {
-      form.reset();
+      if (options.keepValues) {
+        // The messages of a failure must not outlive it: the fields stay, the verdict
+        // of the previous attempt does not.
+        form.clearErrors();
+      } else {
+        form.reset();
+      }
+
       router.refresh();
     }
   });

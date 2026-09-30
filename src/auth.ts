@@ -2,7 +2,7 @@ import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import { z } from "zod";
 import { authConfig } from "@/auth.config";
-import { burnPasswordComparison, verifyPassword } from "@/lib/auth/password";
+import { burnPasswordComparison, passwordTag, verifyPassword } from "@/lib/auth/password";
 import { findOwnerByEmail, normaliseEmail } from "@/modules/identity/repository";
 
 /**
@@ -53,6 +53,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           id: owner.id,
           email: owner.email,
           name: owner.name ?? undefined,
+          // Fingerprint of the hash this session is issued for, so a later password
+          // change can sign it out (see `getSessionUser`).
+          passwordTag: passwordTag(owner.passwordHash),
         };
       },
     }),
@@ -63,6 +66,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     jwt({ token, user }) {
       if (user) {
         token.sub = user.id;
+        // A digest, not the hash: enough to detect a change, useless to an attacker.
+        token.passwordTag = user.passwordTag;
       }
       return token;
     },
@@ -70,6 +75,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (token.sub && session.user) {
         session.user.id = token.sub;
       }
+      session.passwordTag = token.passwordTag;
       return session;
     },
   },

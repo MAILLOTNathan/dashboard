@@ -12,27 +12,42 @@ const ERROR_MESSAGES: Record<string, string> = {
   invalid: "Renseignez une adresse e-mail et un mot de passe.",
 };
 
+/** Confirmation shown after a password change, which signs every session out. */
+const PASSWORD_CHANGED_MESSAGE =
+  "Mot de passe modifié. Toutes les sessions ont été déconnectées : connectez-vous avec le nouveau mot de passe.";
+
 /**
  * Auth.js sends both `error=CredentialsSignin` and a machine-readable `code`.
  * The code is preferred, so the message does not depend on a display string.
+ *
+ * `changed` is ours rather than Auth.js's: it is how the Compte page reports a
+ * successful change without leaving the owner on a page they can no longer use.
  */
-function resolveErrorMessage(params: { error?: string; code?: string }): string | null {
+function resolveNotice(params: {
+  error?: string;
+  code?: string;
+  changed?: string;
+}): { tone: "info" | "error"; message: string } | null {
+  if (params.changed) {
+    return { tone: "info", message: PASSWORD_CHANGED_MESSAGE };
+  }
+
   const key = params.code ?? params.error;
   if (!key) {
     return null;
   }
 
   const normalised = key === "CredentialsSignin" ? "credentials" : key;
-  return ERROR_MESSAGES[normalised] ?? "Connexion impossible.";
+  return { tone: "error", message: ERROR_MESSAGES[normalised] ?? "Connexion impossible." };
 }
 
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string; code?: string }>;
+  searchParams: Promise<{ error?: string; code?: string; changed?: string }>;
 }) {
   const params = await searchParams;
-  const message = resolveErrorMessage(params);
+  const notice = resolveNotice(params);
 
   return (
     <main className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center gap-6 px-6 py-16">
@@ -43,7 +58,7 @@ export default async function LoginPage({
         </p>
       </div>
 
-      {message ? <Notice tone="error">{message}</Notice> : null}
+      {notice ? <Notice tone={notice.tone}>{notice.message}</Notice> : null}
 
       <form action={loginAction} className="flex flex-col gap-4">
         <div className="flex flex-col gap-1">

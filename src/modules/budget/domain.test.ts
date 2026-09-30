@@ -1,3 +1,4 @@
+import Decimal from "decimal.js";
 import { describe, expect, it } from "vitest";
 import {
   accountInputSchema,
@@ -5,7 +6,10 @@ import {
   categoryInputSchema,
   categoryKindForTransactionType,
   categoryMismatchReason,
+  toTransactionFormInitialValues,
   transactionFormSchema,
+  transactionUpdateSchema,
+  type TransactionRecord,
   type TransactionType,
 } from "./domain";
 
@@ -125,6 +129,122 @@ describe("transactionFormSchema", () => {
     expect(transactionFormSchema.safeParse({ ...validForm, accountId: "" }).success).toBe(
       false,
     );
+  });
+});
+
+describe("transactionUpdateSchema", () => {
+  const validUpdate = {
+    id: "transaction-1",
+    accountId: "account-1",
+    categoryId: "category-1",
+    type: "EXPENSE",
+    label: "Courses",
+    amount: "-45,90",
+    operationDate: "2026-09-30",
+    notes: "",
+  };
+
+  it("parses an edition exactly like a creation", () => {
+    const result = transactionUpdateSchema.safeParse(validUpdate);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.amount.toFixed(2)).toBe("-45.90");
+    expect(result.data?.operationDate.toISOString()).toBe("2026-09-30T00:00:00.000Z");
+    expect(result.data?.id).toBe("transaction-1");
+  });
+
+  it("requires the identifier of the row", () => {
+    expect(transactionUpdateSchema.safeParse({ ...validUpdate, id: "   " }).success).toBe(
+      false,
+    );
+
+    // Built without the key at all, which is what a hand-written request that omits it
+    // looks like to the parser.
+    expect(
+      transactionUpdateSchema.safeParse({
+        accountId: validUpdate.accountId,
+        categoryId: validUpdate.categoryId,
+        type: validUpdate.type,
+        label: validUpdate.label,
+        amount: validUpdate.amount,
+        operationDate: validUpdate.operationDate,
+        notes: validUpdate.notes,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("inherits the creation rules rather than restating them", () => {
+    // Two contracts that drifted apart is exactly how an edition ends up accepting what
+    // a creation refuses, so the rules are asserted on both.
+    const tooPrecise = { ...validUpdate, amount: "12,345" };
+    const withoutAccount = { ...validUpdate, accountId: "" };
+
+    expect(transactionUpdateSchema.safeParse(tooPrecise).success).toBe(false);
+    expect(transactionUpdateSchema.safeParse(withoutAccount).success).toBe(false);
+    expect(transactionFormSchema.safeParse(tooPrecise).success).toBe(false);
+  });
+
+  it("carries no currency and no owner, even when one is posted", () => {
+    // The owner comes from the session and the currency from the account: sending either
+    // one must not survive validation, or a replayed request could choose its owner.
+    const result = transactionUpdateSchema.safeParse({
+      ...validUpdate,
+      currency: "USD",
+      userId: "someone-else",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.data).not.toHaveProperty("currency");
+    expect(result.data).not.toHaveProperty("userId");
+  });
+});
+
+describe("toTransactionFormInitialValues", () => {
+  const record: TransactionRecord = {
+    id: "transaction-1",
+    type: "EXPENSE",
+    amount: new Decimal("-45.90"),
+    currency: "EUR",
+    operationDate: new Date("2026-09-30T00:00:00.000Z"),
+    label: "Courses",
+    accountId: "account-1",
+    accountName: "Compte courant",
+    categoryId: "category-1",
+    categoryName: "Courses",
+    notes: null,
+    externalRef: null,
+  };
+
+  it("hands the form strings only, never a Decimal or a Date", () => {
+    const values = toTransactionFormInitialValues(record);
+
+    // This is the regression test for a real failure: a Decimal instance cannot cross the
+    // server/client boundary, so the client received an object whose methods were gone and
+    // the form crashed on `value.toFixed is not a function`.
+    for (const value of Object.values(values)) {
+      expect(typeof value).toBe("string");
+    }
+
+    expect(values.amount).toBe("-45.90");
+    expect(values.operationDate).toBe("2026-09-30");
+  });
+
+  it("turns an unset category and absent notes into empty fields", () => {
+    const values = toTransactionFormInitialValues({
+      ...record,
+      categoryId: null,
+      notes: null,
+    });
+
+    expect(values.categoryId).toBe("");
+    expect(values.notes).toBe("");
+  });
+
+  it("round-trips through the form's own schema without moving a cent", () => {
+    const parsed = transactionFormSchema.safeParse(toTransactionFormInitialValues(record));
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.amount.toFixed(2)).toBe("-45.90");
   });
 });
 

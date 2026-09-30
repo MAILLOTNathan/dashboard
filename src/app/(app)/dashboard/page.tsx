@@ -83,12 +83,12 @@ export default async function DashboardPage() {
                   label={`Solde (${totals.currency})`}
                   value={formatMoney({ amount: totals.net, currency: totals.currency })}
                   tone={totals.net.isNegative() ? "negative" : "positive"}
-                  hint="Hors transferts entre comptes."
+                  hint="Transferts inclus."
                 />
                 <StatCard
                   label={`Transferts (${totals.currency})`}
                   value={formatMoney({ amount: totals.transfers, currency: totals.currency })}
-                  hint="Volume déplacé, exclu du solde."
+                  hint="Volume déplacé, déjà compris dans les deux cartes ci-dessus."
                 />
               </div>
             ))}
@@ -96,9 +96,10 @@ export default async function DashboardPage() {
         )}
 
         <Notice tone="info">
-          Le solde mensuel <strong>exclut les transferts entre comptes</strong> : déplacer
-          de l&apos;argent d&apos;un compte à l&apos;autre n&apos;est ni une recette ni une
-          dépense. Leur volume reste affiché séparément.
+          Le solde mensuel <strong>compte les transferts entre comptes</strong> selon leur
+          signe : un transfert négatif est une sortie, un transfert positif une entrée.
+          Leur volume est affiché à part, et déjà compris dans les recettes et les
+          dépenses.
         </Notice>
       </section>
 

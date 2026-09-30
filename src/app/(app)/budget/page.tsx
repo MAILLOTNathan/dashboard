@@ -24,19 +24,24 @@ import {
 import { formatMoney } from "@/lib/money";
 import {
   TRANSACTION_TYPES,
+  toTransactionFormInitialValues,
   type TransactionType,
 } from "@/modules/budget/domain";
 import {
+  findTransaction,
   listAccounts,
   listCategories,
+  listLabelHistory,
   listTransactions,
   listTransactionsForSeries,
 } from "@/modules/budget/repository";
 import { buildCategoryBreakdown, buildMonthlySeries } from "@/modules/budget/series";
+import { buildLabelSuggestions } from "@/modules/budget/suggestions";
 import {
   computeTotalsByCurrency,
   groupTransactionsByCurrency,
 } from "@/modules/budget/totals";
+import { findCashflowLinkedToTransaction } from "@/modules/real-estate/repository";
 import { AccountForm } from "./account-form";
 import { CategoryForm } from "./category-form";
 import { DeleteTransactionButton } from "./delete-transaction-button";
@@ -92,7 +97,19 @@ export default async function BudgetPage({
   const trendMonthKeys = monthKeysEndingAt(monthKey, TREND_MONTHS);
   const trendStart = monthRange(Number(trendMonthKeys[0].slice(0, 4)), Number(trendMonthKeys[0].slice(5, 7))).start;
 
-  const [accounts, categories, transactions, series] = await Promise.all([
+  // The row being corrected is read from the owner's own data, never taken from the query
+  // string: `?edit=` is only an identifier to look up, so a foreign one finds nothing.
+  const editId = readParam(params, "edit");
+
+  const [
+    accounts,
+    categories,
+    transactions,
+    series,
+    labelHistory,
+    editTarget,
+    editLink,
+  ] = await Promise.all([
     listAccounts(user.id),
     listCategories(user.id),
     listTransactions(user.id, {
@@ -111,16 +128,46 @@ export default async function BudgetPage({
       type,
       search,
     }),
+    // Deliberately unfiltered: a suggestion is worth offering whatever month or
+    // account is being displayed.
+    listLabelHistory(user.id),
+    editId ? findTransaction(user.id, editId) : Promise.resolve(null),
+    // Read only while editing: the form warns when a correction also moves the totals of
+    // a property, which is the case only for a transaction a cashflow points at.
+    editId ? findCashflowLinkedToTransaction(user.id, editId) : Promise.resolve(null),
   ]);
+
+  const labelSuggestions = buildLabelSuggestions(labelHistory);
+
+  // A transaction whose account is no longer active cannot be edited from this page: the
+  // form lists the active accounts, so it would display — and then submit — an account
+  // other than the one the row holds. Refusing beats a silent reassignment.
+  const editing =
+    editTarget && accounts.some((account) => account.id === editTarget.accountId)
+      ? editTarget
+      : null;
+  // Set whenever an edition was asked for and none can be offered — a row deleted in
+  // another tab, or an account that is no longer active. Falling back to the creation form
+  // without a word would look like the link did nothing.
+  const editTargetIsHidden = Boolean(editId) && editing === null;
+
+  // The row may sit outside the displayed month, or be hidden by a filter: the table would
+  // not show it and the form would look like it appeared out of nowhere.
+  const editingIsOutOfView =
+    editing !== null && !transactions.some((transaction) => transaction.id === editing.id);
 
   const totals = computeTotalsByCurrency(transactions);
   const hasAccounts = accounts.length > 0;
   const seriesByCurrency = [...groupTransactionsByCurrency(series.transactions)];
-  const exportParams = new URLSearchParams({ month: monthKey });
-  if (accountId) exportParams.set("account", accountId);
-  if (categoryId) exportParams.set("category", categoryId);
-  if (type) exportParams.set("type", type);
-  if (search) exportParams.set("q", search);
+
+  // Built once: the CSV export and the "Modifier" links must carry the same filters, or
+  // correcting a line would silently change which month is displayed.
+  const filterParams = new URLSearchParams({ month: monthKey });
+  if (accountId) filterParams.set("account", accountId);
+  if (categoryId) filterParams.set("category", categoryId);
+  if (type) filterParams.set("type", type);
+  if (search) filterParams.set("q", search);
+  const listHref = `/budget?${filterParams.toString()}`;
 
   return (
     <>
@@ -129,7 +176,7 @@ export default async function BudgetPage({
         description={`Opérations de ${formatMonthLabel(year, month)}. Les montants sont signés : une sortie est négative.`}
         actions={
           <Link
-            href={`/api/export/transactions?${exportParams.toString()}`}
+            href={`/api/export/transactions?${filterParams.toString()}`}
             className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
             Exporter en CSV
@@ -144,21 +191,57 @@ export default async function BudgetPage({
         </Notice>
       ) : null}
 
+      {editTargetIsHidden ? (
+        <Notice tone="warning">
+          L&apos;opération demandée ne peut pas être modifiée ici : son compte n&apos;est
+          plus actif, ou elle n&apos;existe plus. Le formulaire reste en mode création.
+        </Notice>
+      ) : null}
+
       <Card
-        title="Saisie"
-        description="Ajout manuel. Rien n'est importé d'une banque et rien n'est envoyé à un tiers."
+        title={editing ? "Modifier l'opération" : "Saisie"}
+        description={
+          editing
+            ? "Correction d'une opération existante. « Annuler » revient à la saisie sans rien enregistrer."
+            : "Ajout manuel. Rien n'est importé d'une banque et rien n'est envoyé à un tiers."
+        }
       >
         <div className="flex flex-col gap-3">
-          <details open>
-            <summary className="cursor-pointer text-sm font-medium">Nouvelle opération</summary>
-            <div className="pt-3">
+          {editing ? (
+            <div className="flex flex-col gap-3">
+              {editingIsOutOfView ? (
+                <Notice tone="info">
+                  Cette opération est datée du {formatDateOnly(editing.operationDate)}, hors du
+                  mois ou des filtres affichés : le tableau ci-dessous ne la montre pas.
+                </Notice>
+              ) : null}
+
               <TransactionForm
+                key={editing.id}
                 accounts={accounts}
                 categories={categories}
+                labelSuggestions={labelSuggestions}
                 today={toDateOnlyString(new Date())}
+                editing={toTransactionFormInitialValues(editing)}
+                linkedPropertyName={editLink?.propertyName ?? null}
+                cancelHref={listHref}
               />
             </div>
-          </details>
+          ) : (
+            <details open>
+              <summary className="cursor-pointer text-sm font-medium">
+                Nouvelle opération
+              </summary>
+              <div className="pt-3">
+                <TransactionForm
+                  accounts={accounts}
+                  categories={categories}
+                  labelSuggestions={labelSuggestions}
+                  today={toDateOnlyString(new Date())}
+                />
+              </div>
+            </details>
+          )}
 
           <details>
             <summary className="cursor-pointer text-sm font-medium">Nouveau compte</summary>
@@ -279,12 +362,12 @@ export default async function BudgetPage({
                 label={`Solde (${monthly.currency})`}
                 value={formatMoney({ amount: monthly.net, currency: monthly.currency })}
                 tone={monthly.net.isNegative() ? "negative" : "positive"}
-                hint="Hors transferts."
+                hint="Transferts inclus."
               />
               <StatCard
                 label={`Transferts (${monthly.currency})`}
                 value={formatMoney({ amount: monthly.transfers, currency: monthly.currency })}
-                hint="Exclus du solde."
+                hint="Déjà comptés en recettes ou en dépenses, selon le signe."
               />
             </div>
           ))}
@@ -330,7 +413,7 @@ export default async function BudgetPage({
             <div key={currency} className="flex flex-col gap-4">
               <Card
                 title={`Tendance sur ${TREND_MONTHS} mois — ${currency}`}
-                description={`Recettes au-dessus de l'axe, dépenses en dessous, mois par mois jusqu'à ${formatMonthLabel(year, month)}. Les transferts entre comptes sont exclus, comme partout ailleurs.${
+                description={`Recettes au-dessus de l'axe, dépenses en dessous, mois par mois jusqu'à ${formatMonthLabel(year, month)}. Les transferts entre comptes comptent selon leur signe, comme partout ailleurs.${
                   series.truncated
                     ? " Attention : le nombre d'opérations de la période dépasse la limite de lecture, les totaux affichés sont donc partiels."
                     : ""
@@ -341,7 +424,7 @@ export default async function BudgetPage({
 
               <Card
                 title={`${breakdownKind === "EXPENSE" ? "Où part l'argent" : "D'où vient l'argent"} — ${formatMonthLabel(year, month)}`}
-                description="Part de chaque catégorie sur le mois sélectionné, avec les mêmes filtres que le tableau. Une ligne « Sans catégorie » apparaît quand des opérations n'en ont pas : les bars doivent tomber juste."
+                description="Part de chaque catégorie sur le mois sélectionné, avec les mêmes filtres que le tableau. Une ligne « Sans catégorie » apparaît quand des opérations n'en ont pas, et une ligne « Transferts entre comptes » quand des transferts comptent de ce côté : les bars doivent tomber juste."
                 actions={
                   <Link
                     href={`/budget?${breakdownParams.toString()}`}
@@ -364,7 +447,7 @@ export default async function BudgetPage({
 
       <Card
         title={`${transactions.length} opération${transactions.length > 1 ? "s" : ""}`}
-        description="La suppression demande une confirmation et n'est pas annulable. Une opération rattachée à un flux immobilier doit être détachée d'abord."
+        description="Modifier recharge l'opération dans le formulaire de saisie, filtres conservés. La suppression demande une confirmation et n'est pas annulable : une opération rattachée à un flux immobilier doit être détachée d'abord."
       >
         {transactions.length === 0 ? (
           <EmptyState
@@ -400,7 +483,14 @@ export default async function BudgetPage({
             </thead>
             <tbody>
               {transactions.map((transaction) => (
-                <tr key={transaction.id}>
+                <tr
+                  key={transaction.id}
+                  className={
+                    editing?.id === transaction.id
+                      ? "bg-amber-50 dark:bg-amber-950/30"
+                      : undefined
+                  }
+                >
                   <td className={`${tdClass} whitespace-nowrap tabular-nums`}>
                     {formatDateOnly(transaction.operationDate)}
                   </td>
@@ -426,10 +516,18 @@ export default async function BudgetPage({
                     })}
                   </td>
                   <td className={tdClass}>
-                    <DeleteTransactionButton
-                      transactionId={transaction.id}
-                      label={transaction.label}
-                    />
+                    <div className="flex flex-col items-start gap-1">
+                      <Link
+                        href={`${listHref}&edit=${transaction.id}`}
+                        className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                      >
+                        Modifier
+                      </Link>
+                      <DeleteTransactionButton
+                        transactionId={transaction.id}
+                        label={transaction.label}
+                      />
+                    </div>
                   </td>
                 </tr>
               ))}

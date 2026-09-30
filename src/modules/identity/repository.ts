@@ -40,6 +40,25 @@ export async function countOwners(): Promise<number> {
 }
 
 /**
+ * Replaces the password hash of one owner.
+ *
+ * Scoped by identifier, and the number of written rows is returned: a session that
+ * outlived its row (the database was recreated, or reset) would otherwise look
+ * like a successful change while nothing at all was updated.
+ */
+export async function updateOwnerPassword(
+  userId: string,
+  passwordHash: string,
+): Promise<boolean> {
+  const { count } = await getPrisma().user.updateMany({
+    where: { id: userId },
+    data: { passwordHash },
+  });
+
+  return count === 1;
+}
+
+/**
  * Creates or updates the owner account. Used by the seed script only, so it is
  * idempotent: running it twice does not create a second account.
  */
