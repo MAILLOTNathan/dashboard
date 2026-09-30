@@ -1,0 +1,236 @@
+// Prisma schema for the personal dashboard.
+//
+// Conventions (see AGENTS.md):
+// - Financial amounts use an exact decimal type (Decimal(18, 2)), never floating point.
+//   A negative amount is an outflow, a positive amount is an inflow.
+// - Operation dates are stored as DATE (no time, no time zone).
+// - Instants (creation, update, synchronisation) are stored as timestamptz, in UTC.
+// - Currency is a 3-letter ISO 4217 code, EUR by default.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum AccountType {
+  CHECKING
+  SAVINGS
+  CASH
+  CREDIT_CARD
+  OTHER
+}
+
+enum CategoryKind {
+  INCOME
+  EXPENSE
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+  TRANSFER
+}
+
+/// A property is not necessarily rented: `occupancy` is explicit.
+enum PropertyOccupancy {
+  RENTED
+  VACANT
+  OWNER_OCCUPIED
+  SEASONAL
+  OTHER
+}
+
+enum CashflowKind {
+  INCOME
+  EXPENSE
+}
+
+enum IntegrationProvider {
+  GITHUB
+  GITLAB
+}
+
+enum IntegrationStatus {
+  NOT_CONNECTED
+  CONNECTED
+  ERROR
+}
+
+/// Sole owner of the dashboard. No public sign-up: users are created by the seed script.
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+
+  accounts    Account[]
+  categories  Category[]
+  transactions Transaction[]
+  properties  Property[]
+  connections IntegrationConnection[]
+}
+
+/// A manually tracked account. No banking credentials are ever stored here.
+model Account {
+  id        String      @id @default(cuid())
+  userId    String
+  name      String
+  type      AccountType @default(CHECKING)
+  currency  String      @default("EUR") @db.Char(3)
+  archivedAt DateTime?
+  createdAt DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime    @updatedAt @db.Timestamptz(3)
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@unique([userId, name])
+  @@index([userId])
+}
+
+model Category {
+  id        String       @id @default(cuid())
+  userId    String
+  name      String
+  kind      CategoryKind
+  createdAt DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime     @updatedAt @db.Timestamptz(3)
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@unique([userId, name, kind])
+  @@index([userId])
+}
+
+model Transaction {
+  id       String          @id @default(cuid())
+  userId   String
+  accountId String
+  categoryId String?
+  type     TransactionType
+  label    String
+  /// Signed amount in the account currency: negative for an outflow.
+  amount   Decimal         @db.Decimal(18, 2)
+  currency String          @default("EUR") @db.Char(3)
+  /// Operation date, distinct from createdAt and from any synchronisation date.
+  operationDate DateTime  @db.Date
+  notes    String?
+  /// Stable identifier of the source record, used to make imports re-runnable.
+  externalRef String?
+  createdAt DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime      @updatedAt @db.Timestamptz(3)
+
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account   Account           @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  category  Category?         @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  cashflows PropertyCashflow[]
+
+  @@unique([accountId, externalRef])
+  @@index([userId, operationDate])
+  @@index([userId, categoryId])
+}
+
+model Property {
+  id        String            @id @default(cuid())
+  userId    String
+  name      String
+  address   String?
+  occupancy PropertyOccupancy @default(VACANT)
+  purchaseDate DateTime?      @db.Date
+  saleDate  DateTime?         @db.Date
+  notes     String?
+  createdAt DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime          @updatedAt @db.Timestamptz(3)
+
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cashflows PropertyCashflow[]
+
+  @@unique([userId, name])
+  @@index([userId])
+}
+
+/// A financial entry attached to a property.
+///
+/// Double-counting rule: `transactionId` and `amount` are mutually exclusive.
+/// When the entry is linked to a transaction, the amount comes from the transaction
+/// and `amount` stays null; property totals resolve the linked transaction instead
+/// of adding a second amount.
+model PropertyCashflow {
+  id            String        @id @default(cuid())
+  propertyId    String
+  /// A transaction can be attached to at most one property.
+  transactionId String?       @unique
+  kind          CashflowKind
+  /// Signed amount, only set for standalone entries (no linked transaction).
+  amount        Decimal?      @db.Decimal(18, 2)
+  currency      String        @default("EUR") @db.Char(3)
+  label         String
+  /// Expected date for a charge or a rent; distinct from the settlement date.
+  dueDate       DateTime?     @db.Date
+  settledAt     DateTime?     @db.Date
+  notes         String?
+  createdAt     DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime      @updatedAt @db.Timestamptz(3)
+
+  property    Property     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+
+  @@index([propertyId, dueDate])
+}
+
+/// Read-only connection to a GitHub or GitLab instance.
+/// Secrets are never returned to the browser; `credentialsCiphertext` holds the
+/// encrypted token (AES-256-GCM, key from INTEGRATION_ENCRYPTION_KEY).
+model IntegrationConnection {
+  id       String              @id @default(cuid())
+  userId   String
+  provider IntegrationProvider
+  /// GitLab may be self-hosted. Empty string means the provider's public instance,
+  /// which keeps the uniqueness constraint reliable (NULL is not comparable in PostgreSQL).
+  instanceUrl String           @default("")
+  /// Owner, group or organisation whose projects are tracked.
+  externalOwner String?
+  /// Permissions actually granted by the provider.
+  permissions   String[]
+  status        IntegrationStatus @default(NOT_CONNECTED)
+  lastSyncedAt  DateTime?         @db.Timestamptz(3)
+  lastSyncError String?
+  credentialsCiphertext String?
+  createdAt     DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime          @updatedAt @db.Timestamptz(3)
+
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  snapshots ProjectSnapshot[]
+
+  @@unique([userId, provider, instanceUrl])
+  @@index([userId])
+}
+
+/// Normalised project data kept only to render the dashboard, with its source
+/// and its fetch date. No private source code content is stored.
+model ProjectSnapshot {
+  id           String              @id @default(cuid())
+  connectionId String
+  provider     IntegrationProvider
+  externalId   String
+  externalUrl  String
+  name         String
+  visibility   String?
+  metrics      Json?
+  /// Instant of the last successful fetch for this project.
+  fetchedAt    DateTime            @db.Timestamptz(3)
+  createdAt    DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime            @updatedAt @db.Timestamptz(3)
+
+  connection IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, externalId])
+  @@index([connectionId, fetchedAt])
+}

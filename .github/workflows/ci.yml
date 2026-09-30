@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# No secret is required: the database is a disposable service container and the
+# secrets below are fictitious values used only to let the build run.
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+
+    env:
+      DATABASE_URL: postgresql://dashboard:dashboard@localhost:5432/dashboard?schema=public
+      AUTH_SECRET: ci-only-fictitious-secret-value-not-used-in-production
+      AUTH_TRUST_HOST: "true"
+      INTEGRATION_ENCRYPTION_KEY: Y2ktb25seS1maWN0aXRpb3VzLWtleS0zMi1ieXRlcy0=
+      NEXT_PUBLIC_DEFAULT_CURRENCY: EUR
+      NEXT_PUBLIC_DEFAULT_TIME_ZONE: Europe/Paris
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: dashboard
+          POSTGRES_PASSWORD: dashboard
+          POSTGRES_DB: dashboard
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dashboard -d dashboard"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate the Prisma client
+        run: npm run db:generate
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test
+
+      - name: Apply migrations on a fresh database
+        run: npm run db:deploy
+
+      - name: Build
+        run: npm run build

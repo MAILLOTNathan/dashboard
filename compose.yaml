@@ -1,0 +1,100 @@
+# Local development and first deployment.
+#
+# Default (`docker compose up -d`) starts PostgreSQL only, bound to 127.0.0.1.
+# The full stack (`docker compose --profile full up -d --build`) also runs the app.
+#
+# PostgreSQL is never published on the public interface: in production only the
+# application container reaches it over the internal network.
+
+# Shared by the migration service and the application: a single source of truth
+# avoids the two containers disagreeing about the database they use.
+x-database-url: &database-url postgresql://${POSTGRES_USER:-dashboard}:${POSTGRES_PASSWORD:-dashboard}@db:5432/${POSTGRES_DB:-dashboard}?schema=public
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dashboard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dashboard}
+      POSTGRES_DB: ${POSTGRES_DB:-dashboard}
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      # Localhost only, so a development machine can inspect the database.
+      # Override POSTGRES_PORT when another local project already uses 5432.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dashboard} -d ${POSTGRES_DB:-dashboard}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    profiles: ["full"]
+    build:
+      context: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: *database-url
+      AUTH_SECRET: ${AUTH_SECRET:?AUTH_SECRET is required}
+      AUTH_TRUST_HOST: "true"
+      INTEGRATION_ENCRYPTION_KEY: ${INTEGRATION_ENCRYPTION_KEY:?INTEGRATION_ENCRYPTION_KEY is required}
+      NEXT_PUBLIC_DEFAULT_CURRENCY: ${NEXT_PUBLIC_DEFAULT_CURRENCY:-EUR}
+      NEXT_PUBLIC_DEFAULT_TIME_ZONE: ${NEXT_PUBLIC_DEFAULT_TIME_ZONE:-Europe/Paris}
+    # The port is meant to stay behind an HTTPS reverse proxy.
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  # One-shot migration runner: applies pending migrations, then exits. Re-running
+  # it is a no-op. The app only starts once it has succeeded, so a failed
+  # migration never boots a server against an outdated schema.
+  # Note: the Prisma CLI is not in the application image on purpose; use this
+  # service to inspect a migration (`docker compose --profile full logs migrate`).
+  migrate:
+    profiles: ["full"]
+    build:
+      context: .
+      target: db-tools
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: *database-url
+
+  # One-shot owner bootstrap: creates or updates the single owner account from
+  # SEED_OWNER_*, then exits. It runs on every `up` and is idempotent, so `.env`
+  # is the source of truth for the owner password: change SEED_OWNER_PASSWORD and
+  # run `up -d` again to rotate it. There is no public sign-up, so the app waits
+  # for this service: without an account there is nothing to log in with.
+  # The seed also needs AUTH_SECRET and INTEGRATION_ENCRYPTION_KEY because it
+  # imports @/lib/db, which validates the whole server environment.
+  seed:
+    profiles: ["full"]
+    build:
+      context: .
+      target: db-tools
+    restart: "no"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: *database-url
+      AUTH_SECRET: ${AUTH_SECRET:?AUTH_SECRET is required}
+      INTEGRATION_ENCRYPTION_KEY: ${INTEGRATION_ENCRYPTION_KEY:?INTEGRATION_ENCRYPTION_KEY is required}
+      SEED_OWNER_EMAIL: ${SEED_OWNER_EMAIL:?SEED_OWNER_EMAIL is required}
+      SEED_OWNER_PASSWORD: ${SEED_OWNER_PASSWORD:?SEED_OWNER_PASSWORD is required}
+      SEED_OWNER_NAME: ${SEED_OWNER_NAME:-Proprietaire}
+    command: ["npx", "prisma", "db", "seed"]
+
+volumes:
+  db-data:

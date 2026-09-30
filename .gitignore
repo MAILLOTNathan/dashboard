@@ -34,3 +34,13 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# prisma: the client is generated code, not a source file
+/src/generated/prisma
+
+# never commit backups or data exports: they contain personal financial data
+/infra/backups/*.dump
+/infra/backups/*.sql
+/exports
+
+/src/generated/prisma
