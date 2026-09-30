@@ -21,8 +21,10 @@ Working today:
 - Real estate: properties and cashflow entries entered from the real-estate
   page, occupancy status, totals, due dates.
 - GitHub / GitLab connections: read-only adapters, encrypted tokens, manual
-  synchronisation, project snapshots, plus the open GitHub issues and pull requests
-  counted per repository, with the new, unanswered and long-standing ones flagged.
+  synchronisation, project snapshots, and a small GitHub: open issues and pull
+  requests counted per repository, an explorer with combinable filters (repository,
+  type, assignee, label, milestone, state, text), and milestones with their due dates
+  and progress. GitLab stays on project metadata, on purpose.
 - Dashboard with indicators derived from real data, distinguishing "no data",
   "not connected" and "synchronisation failed".
 

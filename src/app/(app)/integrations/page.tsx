@@ -10,14 +10,26 @@ import {
 } from "@/components/ui";
 import { requireUser } from "@/lib/auth/guard";
 import { formatInstant } from "@/lib/dates";
+import { readSearchParam } from "@/lib/search-params";
 import {
   describeInstance,
   INTEGRATION_PROVIDERS,
+  ISSUE_KINDS,
   type IntegrationProvider,
 } from "@/modules/integrations/domain";
-import { listConnections, listIssues } from "@/modules/integrations/repository";
+import {
+  collectIssueFilterOptions,
+  FILTER_NONE,
+  filterIssues,
+  ISSUE_FLAGS,
+  ISSUE_SORTS,
+  type IssueFilters,
+} from "@/modules/integrations/issues";
+import { listConnections, listIssues, listMilestones } from "@/modules/integrations/repository";
 import { connectProviderAction, syncConnectionAction } from "./actions";
+import { IssueExplorer } from "./issue-explorer";
 import { IssuesCard } from "./issues-card";
+import { MilestonesCard } from "./milestones-card";
 
 export const dynamic = "force-dynamic";
 
@@ -48,9 +60,10 @@ export default async function IntegrationsPage({
 }) {
   const user = await requireUser();
   const params = await searchParams;
-  const [connections, issues] = await Promise.all([
+  const [connections, issues, milestones] = await Promise.all([
     listConnections(user.id),
     listIssues(user.id),
+    listMilestones(user.id),
   ]);
 
   const issueConnections = connections.filter((connection) =>
@@ -73,7 +86,45 @@ export default async function IntegrationsPage({
   const code = typeof params.code === "string" ? params.code : undefined;
   // Repository focused in the issues card (`?repo=owner/name`). An unknown value
   // simply shows every repository: no need to fail on a stale bookmark.
-  const selectedRepository = typeof params.repo === "string" ? params.repo : undefined;
+  const selectedRepository = readSearchParam(params, "repo");
+
+  // Explorer filters. Every value is validated against what actually exists in the data
+  // before it is applied. A stale bookmark naming a deleted repository would otherwise
+  // filter everything out while its select shows "Tous" — a screen that lies, which is
+  // worse than a filter that is simply ignored.
+  const filterOptions = collectIssueFilterOptions(issues);
+  const requestedAssignee = readSearchParam(params, "assignee");
+  const requestedMilestone = readSearchParam(params, "milestone");
+  const requestedLabel = readSearchParam(params, "label");
+
+  const filters: IssueFilters = {
+    repository: filterOptions.repositories.includes(selectedRepository ?? "")
+      ? selectedRepository
+      : undefined,
+    kind: ISSUE_KINDS.find((kind) => kind === readSearchParam(params, "kind")),
+    assignee:
+      requestedAssignee === FILTER_NONE
+        ? filterOptions.hasUnassigned
+          ? FILTER_NONE
+          : undefined
+        : filterOptions.assignees.includes(requestedAssignee ?? "")
+          ? requestedAssignee
+          : undefined,
+    label: filterOptions.labels.includes(requestedLabel ?? "") ? requestedLabel : undefined,
+    milestone:
+      requestedMilestone === FILTER_NONE
+        ? filterOptions.hasWithoutMilestone
+          ? FILTER_NONE
+          : undefined
+        : filterOptions.milestones.includes(requestedMilestone ?? "")
+          ? requestedMilestone
+          : undefined,
+    flags: ISSUE_FLAGS.filter((flag) => flag === readSearchParam(params, "flag")),
+    query: readSearchParam(params, "q"),
+    sort: ISSUE_SORTS.find((sort) => sort === readSearchParam(params, "sort")),
+  };
+
+  const filteredIssues = filterIssues(issues, filters);
 
   return (
     <>
@@ -211,6 +262,19 @@ export default async function IntegrationsPage({
         lastSyncedAt={lastIssueSync}
         selectedRepository={selectedRepository}
       />
+
+      {issueConnections.length > 0 ? (
+        <>
+          <IssueExplorer
+            issues={filteredIssues}
+            totalCount={issues.length}
+            filters={filters}
+            options={filterOptions}
+          />
+
+          <MilestonesCard milestones={milestones} lastSyncedAt={lastIssueSync} />
+        </>
+      ) : null}
 
       <Card
         title="Ajouter ou remplacer une connexion"

@@ -311,6 +311,8 @@ const FICTITIOUS_ISSUE = {
   updated_at: "2026-09-29T09:30:00Z",
   labels: [{ name: "bug" }, "budget"],
   user: { login: "contributor-one" },
+  assignees: [{ login: "contributor-four" }, { login: "contributor-five" }],
+  milestone: { number: 1, title: "V1 — socle", state: "open" },
 };
 
 const FICTITIOUS_PULL_REQUEST = {
@@ -368,6 +370,9 @@ describe("createGitHubAdapter — issues", () => {
       title: "Le total mensuel ignore les remboursements",
       url: "https://github.com/example-owner/example-project/issues/42",
       authorLogin: "contributor-one",
+      // Assignees and milestone are kept as plain values: no provider object is stored.
+      assignees: ["contributor-four", "contributor-five"],
+      milestone: "V1 — socle",
       commentsCount: 0,
       // Labels mix strings and objects in the same payload; only names are kept.
       labels: ["bug", "budget"],
@@ -376,6 +381,35 @@ describe("createGitHubAdapter — issues", () => {
     });
     // The endpoint returns both kinds: the discriminator is the pull_request key.
     expect(outcome.issues[1].kind).toBe("PULL_REQUEST");
+  });
+
+  it("leaves assignees empty and milestone null when the payload has none", async () => {
+    const { impl } = queueFetch([
+      () => jsonResponse([{ ...FICTITIOUS_ISSUE, assignees: [], milestone: null }]),
+    ]);
+
+    const outcome = await createGitHubAdapter().listIssues(
+      listIssuesRequest([project("example-owner/example-project", "2026-09-30T10:00:00Z")], impl),
+    );
+
+    expect(outcome.issues[0].assignees).toEqual([]);
+    expect(outcome.issues[0].milestone).toBeNull();
+  });
+
+  it("survives an issue payload without the new fields at all", async () => {
+    // An older API version, or a payload that never carried them: absence must mean
+    // "empty", not a crash and not a fabricated value.
+    const payload: Record<string, unknown> = { ...FICTITIOUS_ISSUE };
+    delete payload.assignees;
+    delete payload.milestone;
+    const { impl } = queueFetch([() => jsonResponse([payload])]);
+
+    const outcome = await createGitHubAdapter().listIssues(
+      listIssuesRequest([project("example-owner/example-project", "2026-09-30T10:00:00Z")], impl),
+    );
+
+    expect(outcome.issues[0].assignees).toEqual([]);
+    expect(outcome.issues[0].milestone).toBeNull();
   });
 
   it("queries the most recently pushed repositories first, and reports the rest as not read", async () => {

@@ -9,28 +9,26 @@ import {
   tdClass,
   thClass,
 } from "@/components/ui";
-import { formatDateOnly, formatInstant } from "@/lib/dates";
+import { formatInstant } from "@/lib/dates";
 import {
-  ageInDays,
   computeIssueHighlights,
-  isRecent,
-  isUnanswered,
-  sortIssuesByRecency,
   summariseByRepository,
 } from "@/modules/integrations/issues";
 import type { IssueSummary } from "@/modules/integrations/repository";
 
 /**
- * Open issues and pull requests, fetched from the provider.
+ * Open issues and pull requests, per repository.
  *
- * What is shown is deliberately limited: title, identifier, link, author, comment
- * count, labels and dates. No description and no comment body — reading them happens
- * at the provider, where the permissions and the context are.
+ * This card is the map: which repositories have work, how much, and what is being
+ * forgotten. The list itself lives in the explorer below, where it can be filtered.
  *
- * The table is truncated, the indicators are not: they are computed on everything
- * that is followed, so "3 sans réponse" stays true even if only the newest rows fit.
+ * What is shown is deliberately limited: titles, links, assignees, milestones, labels
+ * and dates. No description and no comment body — reading those happens at the
+ * provider, where the permissions and the context are.
+ *
+ * The per-repository table is never truncated: a repository must not disappear below
+ * the fold of a long list.
  */
-const DISPLAY_LIMIT = 25;
 
 export function IssuesCard({
   issues,
@@ -50,25 +48,21 @@ export function IssuesCard({
   const repositories = summariseByRepository(issues, { now });
   const focused = repositories.find((entry) => entry.repository === selectedRepository);
 
-  // Focusing on one repository recomputes every indicator on that repository alone,
-  // so the figures always describe the rows displayed next to them. A whole repository
-  // is then shown, not the flat list's first page.
-  const visible = focused
-    ? sortIssuesByRecency(issues.filter((issue) => issue.repository === focused.repository))
-    : sortIssuesByRecency(issues);
-
+  // Focusing on one repository recomputes every indicator on that repository alone, so
+  // the figures always describe the rows displayed next to them.
   const highlights = computeIssueHighlights(
-    focused ? visible : issues,
+    focused
+      ? issues.filter((issue) => issue.repository === focused.repository)
+      : issues,
     { now },
   );
-  const displayed = focused ? visible : visible.slice(0, DISPLAY_LIMIT);
 
   return (
     <Card
       title="Issues et pull requests ouvertes"
       description={
         issueTrackingConnected
-          ? `Le texte reste chez le fournisseur : seuls le titre, le lien, l'auteur, les étiquettes et les dates sont repris ici.${
+          ? `Le texte reste chez le fournisseur : seuls le titre, le lien, l'auteur, les assignés, le jalon, les étiquettes et les dates sont repris ici.${
               lastSyncedAt ? ` Dernière lecture : ${formatInstant(lastSyncedAt)}.` : ""
             }`
           : undefined
@@ -172,7 +166,8 @@ export function IssuesCard({
           <p className="text-sm font-medium">
             {focused ? (
               <>
-                {focused.repository} — {visible.length} issue(s) et pull request(s) ouverte(s)
+                {focused.repository} — {focused.openIssues} issue(s) et{" "}
+                {focused.pullRequests} pull request(s) ouverte(s)
               </>
             ) : (
               <>Toutes les issues suivies ({issues.length})</>
@@ -219,98 +214,10 @@ export function IssuesCard({
             </Notice>
           ) : null}
 
-          <TableShell caption="Issues et pull requests ouvertes">
-            <thead>
-              <tr>
-                <th scope="col" className={thClass}>
-                  Ouverte
-                </th>
-                <th scope="col" className={thClass}>
-                  Sujet
-                </th>
-                <th scope="col" className={thClass}>
-                  Auteur
-                </th>
-                <th scope="col" className={`${thClass} text-right`}>
-                  Commentaires
-                </th>
-                <th scope="col" className={thClass}>
-                  Étiquettes
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {displayed.map((issue) => {
-                const ageDays = ageInDays(issue.openedAt, now);
-                const unanswered = isUnanswered(issue, now, highlights.unansweredDays);
-
-                return (
-                  <tr key={issue.id}>
-                    <td className={tdClass}>
-                      <span className="whitespace-nowrap">
-                        {formatDateOnly(issue.openedAt)}
-                      </span>
-                      <span className="block text-xs text-zinc-500 dark:text-zinc-400">
-                        {describeAge(ageDays)}
-                      </span>
-                      <span className="mt-1 flex flex-wrap gap-1">
-                        {issue.kind === "PULL_REQUEST" ? (
-                          <Badge tone="neutral">PR</Badge>
-                        ) : null}
-                        {isRecent(issue, now, highlights.recentDays) ? (
-                          <Badge tone="positive">Nouvelle</Badge>
-                        ) : null}
-                        {unanswered ? <Badge tone="negative">Sans réponse</Badge> : null}
-                      </span>
-                    </td>
-                    <td className={tdClass}>
-                      <Link
-                        href={issue.url}
-                        target="_blank"
-                        rel="noreferrer noopener"
-                        className="font-medium underline-offset-2 hover:underline"
-                      >
-                        {issue.title}
-                      </Link>
-                      <span className="block text-xs text-zinc-500 dark:text-zinc-400">
-                        {focused ? "" : `${issue.repository} `}#{issue.number} ·{" "}
-                        {issue.connectionLabel}
-                      </span>
-                    </td>
-                    <td className={tdClass}>
-                      {issue.authorLogin ?? (
-                        <span className="text-zinc-500 dark:text-zinc-400">Inconnu</span>
-                      )}
-                    </td>
-                    <td className={`${tdClass} text-right tabular-nums`}>
-                      {issue.commentsCount}
-                    </td>
-                    <td className={tdClass}>
-                      {issue.labels.length === 0 ? (
-                        <span className="text-zinc-500 dark:text-zinc-400">Aucune</span>
-                      ) : (
-                        <span className="flex flex-wrap gap-1">
-                          {issue.labels.map((label) => (
-                            <Badge key={label} tone="neutral">
-                              {label}
-                            </Badge>
-                          ))}
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </TableShell>
-
           <p className="text-xs text-zinc-500 dark:text-zinc-400">
-            {!focused && visible.length > DISPLAY_LIMIT
-              ? `${DISPLAY_LIMIT} plus récentes affichées sur ${visible.length} suivies. `
-              : ""}
-            {!focused
-              ? "Choisissez un dépôt ci-dessus pour voir toutes ses issues. "
-              : ""}
+            {focused
+              ? `Les issues de ${focused.repository} sont listées dans l'explorateur ci-dessous. `
+              : "Choisissez un dépôt pour restreindre l'explorateur ci-dessous. "}
             Une synchronisation interroge les dépôts les plus récemment modifiés, par ordre
             d&apos;activité décroissante, et s&apos;arrête là : un dépôt ancien n&apos;est pas lu.
             Seules les issues encore ouvertes sont conservées. Un dépôt absent de ce tableau
@@ -320,17 +227,4 @@ export function IssuesCard({
       )}
     </Card>
   );
-}
-
-/** Age in plain words, floored: "il y a 3 j" never means 2 days and 20 hours. */
-function describeAge(days: number): string {
-  if (days <= 0) {
-    return "aujourd'hui";
-  }
-
-  if (days === 1) {
-    return "hier";
-  }
-
-  return `il y a ${days} j`;
 }

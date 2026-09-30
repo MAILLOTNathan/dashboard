@@ -111,8 +111,9 @@ asked for: a cascade here would silently change what a property is worth.
 - Property totals — each cashflow entry counts once. When an entry is linked to
   a transaction, the transaction is the only source of the amount.
 - GitHub issues — only **open** issues and pull requests are kept, and only the
-  fields needed to act: title, link, author, comment count, labels, dates. No
-  description, no comment body, no source code: reading them stays at the provider.
+  fields needed to act: title, link, author, **assignees**, **milestone**, comment
+  count, labels, dates. No description, no comment body, no source code: reading them
+  stays at the provider.
   - `recent` — opened less than 14 days ago, whatever the kind.
   - `unanswered` — an *issue* (not a pull request) open for at least 3 days with
     zero comments. This is the signal that goes unnoticed in a busy repository.
@@ -127,7 +128,21 @@ asked for: a cascade here would silently change what a property is worth.
   issues, pull requests, new entries and unanswered entries, and is never truncated:
   the flat list is capped for readability, a repository is not. Focusing one
   repository (`?repo=owner/name`) recomputes every indicator on that repository
-  alone, so the figures always describe the rows displayed beside them.
+  alone, so the figures always describe the rows displayed beside them. The wording is
+  literal: the list is rendered by the explorer below.
+- Issue explorer — filters combine as an intersection (`filterIssues`): repository,
+  kind, assignee (including "personne"), label, milestone (including "aucun"), flag
+  (`sans réponse`, `ouverte récemment`, `ancienne`, `sans assigné`), title search, and
+  sort (recent, oldest, comments, activity). The flags reuse the very predicates that
+  draw the badges, so a filter and a badge can never disagree. The controls are built
+  from the values actually present in the data, and a value that no longer exists is
+  ignored rather than applied: a filter that matches nothing while its select shows
+  "Tous" would be a screen that lies.
+- Milestones — `listMilestones` keeps the provider's counters and due date, plus the
+  number of issues followed here and how many of those have no assignee. The card names
+  both figures because they differ: the provider counts everything attached to the
+  milestone, this dashboard counts what it stores. `describeMilestoneDue` never calls a
+  closed milestone late — its due date is history, not a warning.
 - Budget charts — two, each answering a question the monthly table cannot. Both reuse
   the aggregation rules above instead of defining their own, so a number in a chart
   always equals the same number in a table:
@@ -186,6 +201,9 @@ deliberately excluded). Issues cost one request per repository, so the run is
 bounded on purpose: repositories are ordered by recent activity and only the most
 recently pushed ones are queried, with a fixed page size each. A repository that
 was not read is reported as such after a manual run — never as "nothing is open".
+
+Milestones are read from the same repository selection, one more request each, so the
+issue list and the milestone list always describe the same scope.
 
 A single unreadable repository (renamed, moved, deleted) is counted and skipped:
 it must not cost the others. A quota or a revoked token fails the whole run

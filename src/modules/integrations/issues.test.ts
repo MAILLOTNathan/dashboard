@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   ageInDays,
+  collectIssueFilterOptions,
   computeIssueHighlights,
+  FILTER_NONE,
+  filterIssues,
   isRecent,
   isStale,
   isUnanswered,
@@ -183,6 +186,209 @@ describe("sortIssuesByRecency", () => {
 
     expect(sorted.map((entry) => entry.id)).toEqual(["newest", "middle", "oldest"]);
     expect(input.map((entry) => entry.id)).toEqual(["middle", "oldest", "newest"]);
+  });
+});
+
+describe("filterIssues", () => {
+  /** A small fixture with every dimension the explorer filters on. */
+  function row(overrides: {
+    id: string;
+    repository?: string;
+    kind?: IssueLike["kind"];
+    openedAt?: Date;
+    commentsCount?: number;
+    assignees?: string[];
+    labels?: string[];
+    milestone?: string | null;
+    title?: string;
+  }) {
+    return {
+      id: overrides.id,
+      repository: overrides.repository ?? "example-org/api",
+      kind: overrides.kind ?? ("ISSUE" as const),
+      openedAt: overrides.openedAt ?? daysAgo(2),
+      commentsCount: overrides.commentsCount ?? 0,
+      assignees: overrides.assignees ?? [],
+      labels: overrides.labels ?? [],
+      milestone: overrides.milestone ?? null,
+      title: overrides.title ?? "Un titre",
+    };
+  }
+
+  const rows = [
+    row({
+      id: "unassigned-old",
+      openedAt: daysAgo(120),
+      title: "Export cassé",
+      labels: ["bug"],
+    }),
+    row({
+      id: "assigned-fresh-pr",
+      kind: "PULL_REQUEST",
+      openedAt: daysAgo(1),
+      commentsCount: 4,
+      assignees: ["alice"],
+      milestone: "V1",
+      title: "Refonte du tableau",
+      repository: "example-org/site",
+    }),
+    row({
+      id: "assigned-answered",
+      openedAt: daysAgo(30),
+      commentsCount: 3,
+      assignees: ["bob", "alice"],
+      labels: ["urgent"],
+      milestone: "V1",
+      title: "Lenteur sur les totaux",
+    }),
+  ];
+
+  it("returns everything without a filter, newest first", () => {
+    const result = filterIssues(rows, {}, { now: NOW });
+
+    expect(result.map((entry) => entry.id)).toEqual([
+      "assigned-fresh-pr",
+      "assigned-answered",
+      "unassigned-old",
+    ]);
+  });
+
+  it("treats an empty filter value as no constraint, never as an impossible one", () => {
+    const result = filterIssues(
+      rows,
+      { repository: "", kind: undefined, assignee: "", label: "", milestone: "", query: "" },
+      { now: NOW },
+    );
+
+    expect(result).toHaveLength(3);
+  });
+
+  it("filters by repository, kind, assignee and label together", () => {
+    expect(filterIssues(rows, { repository: "example-org/site" }, { now: NOW })).toHaveLength(1);
+    expect(filterIssues(rows, { kind: "PULL_REQUEST" }, { now: NOW })).toHaveLength(1);
+    expect(
+      filterIssues(rows, { assignee: "alice", label: "urgent" }, { now: NOW }).map((r) => r.id),
+    ).toEqual(["assigned-answered"]);
+  });
+
+  it("matches an issue assigned to anyone when several assignees answer to the filter", () => {
+    expect(filterIssues(rows, { assignee: "bob" }, { now: NOW }).map((r) => r.id)).toEqual([
+      "assigned-answered",
+    ]);
+  });
+
+  it("filters the issues nobody is assigned to", () => {
+    expect(
+      filterIssues(rows, { assignee: FILTER_NONE }, { now: NOW }).map((r) => r.id),
+    ).toEqual(["unassigned-old"]);
+  });
+
+  it("filters by milestone, and the ones without one", () => {
+    expect(filterIssues(rows, { milestone: "V1" }, { now: NOW })).toHaveLength(2);
+    expect(
+      filterIssues(rows, { milestone: FILTER_NONE }, { now: NOW }).map((r) => r.id),
+    ).toEqual(["unassigned-old"]);
+  });
+
+  it("searches the title without caring about case", () => {
+    expect(
+      filterIssues(rows, { query: "export" }, { now: NOW }).map((r) => r.id),
+    ).toEqual(["unassigned-old"]);
+  });
+
+  it("reuses the same definitions as the badges for its flags", () => {
+    // 120 days open with no comment: stale, unanswered, and unassigned.
+    expect(
+      filterIssues(rows, { flags: ["stale"] }, { now: NOW }).map((r) => r.id),
+    ).toEqual(["unassigned-old"]);
+    expect(
+      filterIssues(rows, { flags: ["unanswered"] }, { now: NOW }).map((r) => r.id),
+    ).toEqual(["unassigned-old"]);
+    expect(
+      filterIssues(rows, { flags: ["recent"] }, { now: NOW }).map((r) => r.id),
+    ).toEqual(["assigned-fresh-pr"]);
+    expect(
+      filterIssues(rows, { flags: ["unassigned"] }, { now: NOW }).map((r) => r.id),
+    ).toEqual(["unassigned-old"]);
+  });
+
+  it("combines several flags as an intersection", () => {
+    // Recent and unanswered cannot both hold: the grace period excludes it.
+    expect(filterIssues(rows, { flags: ["recent", "unanswered"] }, { now: NOW })).toEqual([]);
+  });
+
+  it("sorts by oldest, by comments and by activity", () => {
+    expect(filterIssues(rows, { sort: "oldest" }, { now: NOW }).map((r) => r.id)).toEqual([
+      "unassigned-old",
+      "assigned-answered",
+      "assigned-fresh-pr",
+    ]);
+    expect(filterIssues(rows, { sort: "comments" }, { now: NOW }).map((r) => r.id)).toEqual([
+      "assigned-fresh-pr",
+      "assigned-answered",
+      "unassigned-old",
+    ]);
+  });
+
+  it("does not mutate the list it filters", () => {
+    const input = [...rows];
+
+    filterIssues(input, { sort: "oldest" }, { now: NOW });
+
+    expect(input.map((entry) => entry.id)).toEqual(rows.map((entry) => entry.id));
+  });
+});
+
+describe("collectIssueFilterOptions", () => {
+  it("lists what is actually present, and whether \"none\" is worth offering", () => {
+    const options = collectIssueFilterOptions([
+      {
+        kind: "ISSUE",
+        openedAt: daysAgo(1),
+        commentsCount: 0,
+        repository: "example-org/b",
+        title: "B",
+        labels: ["bug", "ui"],
+        assignees: ["alice"],
+        milestone: "V1",
+      },
+      {
+        kind: "ISSUE",
+        openedAt: daysAgo(2),
+        commentsCount: 1,
+        repository: "example-org/a",
+        title: "A",
+        labels: ["bug"],
+        assignees: [],
+        milestone: null,
+      },
+    ]);
+
+    expect(options.repositories).toEqual(["example-org/a", "example-org/b"]);
+    expect(options.assignees).toEqual(["alice"]);
+    expect(options.labels).toEqual(["bug", "ui"]);
+    expect(options.milestones).toEqual(["V1"]);
+    // Both "none" options are useful: some rows have no assignee and no milestone.
+    expect(options.hasUnassigned).toBe(true);
+    expect(options.hasWithoutMilestone).toBe(true);
+  });
+
+  it("does not offer a \"none\" filter when every row has a value", () => {
+    const options = collectIssueFilterOptions([
+      {
+        kind: "ISSUE",
+        openedAt: daysAgo(1),
+        commentsCount: 0,
+        repository: "example-org/a",
+        title: "A",
+        labels: [],
+        assignees: ["alice"],
+        milestone: "V1",
+      },
+    ]);
+
+    expect(options.hasUnassigned).toBe(false);
+    expect(options.hasWithoutMilestone).toBe(false);
   });
 });
 

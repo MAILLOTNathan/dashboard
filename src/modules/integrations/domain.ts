@@ -55,12 +55,37 @@ export type ProviderIssue = {
   title: string;
   url: string;
   authorLogin: string | null;
+  /** Assignees, by login. Empty means nobody has picked it up. */
+  assignees: string[];
+  /** Milestone title, or null when the issue is not attached to one. */
+  milestone: string | null;
   commentsCount: number;
   labels: string[];
   /** Instant the issue was opened at the provider. */
   openedAt: Date;
   /** Instant of the last activity at the provider. */
   activityAt: Date;
+};
+
+/**
+ * A milestone, normalised.
+ *
+ * The counters are the provider's own: they cover everything attached to the
+ * milestone, not only the issues kept here. They are the authoritative figures, and
+ * the interface says so rather than recomputing a smaller number that would look like
+ * a contradiction.
+ */
+export type ProviderMilestone = {
+  externalId: string;
+  repository: string;
+  number: number;
+  title: string;
+  /** "open" or "closed", as reported. */
+  state: string;
+  dueOn: Date | null;
+  issuesOpen: number;
+  issuesClosed: number;
+  url: string;
 };
 
 export type SyncOutcome = {
@@ -82,6 +107,8 @@ export type ConnectionSummary = {
   projectCount: number;
   /** Open issues and pull requests currently followed, zero when unsupported. */
   issueCount: number;
+  /** Milestones currently followed, zero when unsupported. */
+  milestoneCount: number;
 };
 
 /** Public host used when the connection targets the provider's own instance. */

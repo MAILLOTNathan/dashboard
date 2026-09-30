@@ -216,6 +216,7 @@ model IntegrationConnection {
   user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   snapshots ProjectSnapshot[]
   issues    IssueSnapshot[]
+  milestones MilestoneSnapshot[]
 
   @@unique([userId, provider, instanceUrl])
   @@index([userId])
@@ -263,6 +264,12 @@ model IssueSnapshot {
   title        String
   url          String
   authorLogin  String?
+  /// Logins of the assignees. Empty means nobody picked it up yet, which is a state
+  /// worth seeing, not a missing value.
+  assignees    String[]
+  /// Milestone title, as displayed by the provider. `null` means "no milestone":
+  /// GitHub has no milestone notion beyond a title here, so no foreign key is kept.
+  milestone    String?
   commentsCount Int
   labels       String[]
   /// Instant the issue was opened at the provider.
@@ -278,4 +285,37 @@ model IssueSnapshot {
   @@unique([connectionId, externalId])
   @@index([connectionId, fetchedAt])
   @@index([connectionId, kind, openedAt])
+  @@index([connectionId, milestone])
+}
+
+/// A milestone, kept to show progress and due dates.
+///
+/// The counters come from the provider and cover everything attached to the
+/// milestone, not only the issues kept here: they are the authoritative figures, and
+/// the interface labels them as such instead of recomputing a smaller number.
+model MilestoneSnapshot {
+  id           String              @id @default(cuid())
+  connectionId String
+  provider     IntegrationProvider
+  externalId   String
+  /// Repository full name, for example "owner/repo".
+  repository   String
+  number       Int
+  title        String
+  /// "open" or "closed", as the provider reports it.
+  state        String
+  /// Provider due date. GitHub stores a time on it, which is meaningless: only the day
+  /// is displayed, in UTC, like every other date of this project.
+  dueOn        DateTime?           @db.Timestamptz(3)
+  issuesOpen   Int
+  issuesClosed Int
+  url          String
+  fetchedAt    DateTime            @db.Timestamptz(3)
+  createdAt    DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime            @updatedAt @db.Timestamptz(3)
+
+  connection IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, externalId])
+  @@index([connectionId, state, dueOn])
 }

@@ -1,4 +1,10 @@
-import type { IntegrationProvider, ProviderIssue, ProviderProject, SyncOutcome } from "./domain";
+import type {
+  IntegrationProvider,
+  ProviderIssue,
+  ProviderMilestone,
+  ProviderProject,
+  SyncOutcome,
+} from "./domain";
 
 /**
  * Provider adapter contract.
@@ -64,8 +70,11 @@ export interface IntegrationAdapter {
    * "nothing is open".
    */
   readonly tracksIssues: boolean;
+  /** Same idea for milestones: false means the interface must say "not tracked". */
+  readonly tracksMilestones: boolean;
   listProjects(request: SyncRequest): Promise<SyncOutcome>;
   listIssues(request: IssueSyncRequest): Promise<IssueSyncOutcome>;
+  listMilestones(request: IssueSyncRequest): Promise<MilestoneSyncOutcome>;
 }
 
 /**
@@ -82,17 +91,27 @@ export type IssueSyncRequest = SyncRequest & {
   pageSize?: number;
 };
 
-export type IssueSyncOutcome = {
+/** How much of the repository list a bounded scan actually covered. */
+export type RepositoryScanSummary = {
+  /** Repositories actually read during this run. */
+  repositoriesScanned: number;
+  /** Repositories left out because of the bound: their data is unknown, not zero. */
+  repositoriesSkipped: number;
+  /** Repositories the provider refused to answer for (renamed, moved, deleted). */
+  repositoriesFailed: number;
+};
+
+export type IssueSyncOutcome = RepositoryScanSummary & {
   /** False for a provider whose issues are not tracked; the list is then empty. */
   supported: boolean;
   issues: ProviderIssue[];
   fetchedAt: Date;
-  /** Repositories actually read during this run. */
-  repositoriesScanned: number;
-  /** Repositories left out because of the bound: their issues are unknown, not zero. */
-  repositoriesSkipped: number;
-  /** Repositories the provider refused to answer for (renamed, moved, deleted). */
-  repositoriesFailed: number;
+};
+
+export type MilestoneSyncOutcome = RepositoryScanSummary & {
+  supported: boolean;
+  milestones: ProviderMilestone[];
+  fetchedAt: Date;
 };
 
 export type JsonResponse<T> = {
@@ -209,6 +228,29 @@ export function assertIssueShape(
     throw new ProviderError(
       "INVALID_RESPONSE",
       `Issue ${provider} incomplète : identifiant, numéro, titre, URL ou date manquant.`,
+    );
+  }
+}
+
+/**
+ * Validates one normalised milestone. A milestone without an identifier or a title
+ * could not be displayed nor filtered, so it fails the run instead of being stored.
+ */
+export function assertMilestoneShape(
+  milestone: Partial<{ externalId: unknown; title: unknown; number: unknown }>,
+  provider: IntegrationProvider,
+): void {
+  const isText = (value: unknown): value is string =>
+    typeof value === "string" && value.length > 0;
+
+  if (
+    !isText(milestone.externalId) ||
+    !isText(milestone.title) ||
+    typeof milestone.number !== "number"
+  ) {
+    throw new ProviderError(
+      "INVALID_RESPONSE",
+      `Jalon ${provider} incomplet : identifiant, numéro ou titre manquant.`,
     );
   }
 }

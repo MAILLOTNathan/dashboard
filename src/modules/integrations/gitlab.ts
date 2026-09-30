@@ -5,6 +5,7 @@ import {
   requestJson,
   type IntegrationAdapter,
   type IssueSyncOutcome,
+  type MilestoneSyncOutcome,
   type SyncRequest,
 } from "./adapter";
 import type { ProviderProject, SyncOutcome } from "./domain";
@@ -137,6 +138,8 @@ export function createGitLabAdapter(): IntegrationAdapter {
      * Enabling it is a decision to take with the owner of that instance, not a default.
      */
     tracksIssues: false,
+    /** Same decision as `tracksIssues`: nothing beyond project metadata is read. */
+    tracksMilestones: false,
 
     async listProjects(request: SyncRequest): Promise<SyncOutcome> {
       const fetchImpl = request.fetchImpl ?? fetch;
@@ -194,6 +197,17 @@ export function createGitLabAdapter(): IntegrationAdapter {
       return {
         supported: false,
         issues: [],
+        fetchedAt: new Date(),
+        repositoriesScanned: 0,
+        repositoriesSkipped: 0,
+        repositoriesFailed: 0,
+      };
+    },
+
+    async listMilestones(): Promise<MilestoneSyncOutcome> {
+      return {
+        supported: false,
+        milestones: [],
         fetchedAt: new Date(),
         repositoriesScanned: 0,
         repositoriesSkipped: 0,

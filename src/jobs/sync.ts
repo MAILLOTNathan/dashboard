@@ -8,6 +8,7 @@ import {
   markSyncFailure,
   markSyncSuccess,
   saveIssues,
+  saveMilestones,
   saveSnapshots,
 } from "@/modules/integrations/repository";
 
@@ -45,6 +46,8 @@ export type SyncRunResult =
       issueTracking: boolean;
       /** Repositories left out of the issue fetch because of the run bound. */
       issuesSkippedRepositories: number;
+      /** Milestones followed after this run. */
+      milestoneCount: number;
       fetchedAt: Date;
     }
   | {
@@ -133,6 +136,27 @@ export async function synchroniseConnection(
         issues.repositoriesFailed === 0,
     });
 
+    // Milestones come from the same repository selection, so the two views describe
+    // exactly the same scope.
+    const milestones = await adapter.listMilestones({
+      token: connection.token,
+      instanceUrl: connection.instanceUrl,
+      owner: connection.externalOwner,
+      projects: outcome.projects,
+      fetchImpl: dependencies.fetchImpl,
+    });
+
+    await saveMilestones({
+      connectionId: connection.id,
+      provider: connection.provider,
+      milestones: milestones.milestones,
+      fetchedAt: milestones.fetchedAt,
+      pruneMissing:
+        milestones.supported &&
+        milestones.repositoriesSkipped === 0 &&
+        milestones.repositoriesFailed === 0,
+    });
+
     await markSyncSuccess(connection.id, outcome.fetchedAt);
 
     return {
@@ -143,6 +167,7 @@ export async function synchroniseConnection(
       issueCount: issues.issues.length,
       issueTracking: issues.supported,
       issuesSkippedRepositories: issues.repositoriesSkipped,
+      milestoneCount: milestones.milestones.length,
       fetchedAt: outcome.fetchedAt,
     };
   } catch (error) {

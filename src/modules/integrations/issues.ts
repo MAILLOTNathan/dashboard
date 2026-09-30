@@ -34,6 +34,197 @@ export type IssueLike = {
   commentsCount: number;
 };
 
+/** What the explorer filters on: everything it displays, and nothing more. */
+export type FilterableIssue = IssueLike & {
+  repository: string;
+  title: string;
+  labels: string[];
+  assignees: string[];
+  milestone: string | null;
+};
+
+/** Sentinel used in a filter to mean "none of them", for an assignee or a milestone. */
+export const FILTER_NONE = "none";
+
+export const ISSUE_FLAGS = ["unanswered", "recent", "stale", "unassigned"] as const;
+export type IssueFlag = (typeof ISSUE_FLAGS)[number];
+
+export const ISSUE_SORTS = ["recent", "oldest", "comments", "activity"] as const;
+export type IssueSort = (typeof ISSUE_SORTS)[number];
+
+export type IssueFilters = {
+  repository?: string;
+  kind?: IssueKind;
+  /** Login, or `FILTER_NONE` for issues nobody is assigned to. */
+  assignee?: string;
+  label?: string;
+  /** Milestone title, or `FILTER_NONE` for issues without one. */
+  milestone?: string;
+  flags?: readonly IssueFlag[];
+  /** Case-insensitive substring of the title. */
+  query?: string;
+  sort?: IssueSort;
+};
+
+/**
+ * The values present in the current selection, used to build the filter controls.
+ *
+ * Built from the data rather than hard-coded: a filter offering a value that matches
+ * nothing would be a dead end, and one missing a value would hide rows silently.
+ */
+export function collectIssueFilterOptions(issues: readonly FilterableIssue[]): {
+  repositories: string[];
+  assignees: string[];
+  labels: string[];
+  milestones: string[];
+  hasUnassigned: boolean;
+  hasWithoutMilestone: boolean;
+} {
+  const repositories = new Set<string>();
+  const assignees = new Set<string>();
+  const labels = new Set<string>();
+  const milestones = new Set<string>();
+  let hasUnassigned = false;
+  let hasWithoutMilestone = false;
+
+  for (const issue of issues) {
+    repositories.add(issue.repository);
+
+    if (issue.assignees.length === 0) {
+      hasUnassigned = true;
+    } else {
+      for (const assignee of issue.assignees) {
+        assignees.add(assignee);
+      }
+    }
+
+    for (const label of issue.labels) {
+      labels.add(label);
+    }
+
+    if (issue.milestone === null) {
+      hasWithoutMilestone = true;
+    } else {
+      milestones.add(issue.milestone);
+    }
+  }
+
+  return {
+    repositories: [...repositories].sort(),
+    assignees: [...assignees].sort(),
+    labels: [...labels].sort(),
+    milestones: [...milestones].sort(),
+    hasUnassigned,
+    hasWithoutMilestone,
+  };
+}
+
+/**
+ * Applies the explorer filters.
+ *
+ * Every filter is inclusive and independent: the result is the intersection, so adding
+ * a criterion can only narrow the list. An empty filter value (undefined, or an empty
+ * string coming from a form) means "no constraint", never "match nothing".
+ *
+ * The flags reuse the predicates of the summary above, so "sans réponse" means the
+ * same thing in a badge and in a filter.
+ */
+export function filterIssues<TIssue extends FilterableIssue>(
+  issues: readonly TIssue[],
+  filters: IssueFilters,
+  options: { now?: Date; recentDays?: number; unansweredDays?: number; staleDays?: number } = {},
+): TIssue[] {
+  const now = options.now ?? new Date();
+  const recentDays = options.recentDays ?? DEFAULT_RECENT_DAYS;
+  const unansweredDays = options.unansweredDays ?? DEFAULT_UNANSWERED_DAYS;
+  const staleDays = options.staleDays ?? DEFAULT_STALE_DAYS;
+  const flags = filters.flags ?? [];
+  const query = filters.query?.trim().toLowerCase() ?? "";
+
+  const filtered = issues.filter((issue) => {
+    if (filters.repository && issue.repository !== filters.repository) {
+      return false;
+    }
+
+    if (filters.kind && issue.kind !== filters.kind) {
+      return false;
+    }
+
+    if (filters.assignee === FILTER_NONE) {
+      if (issue.assignees.length > 0) {
+        return false;
+      }
+    } else if (filters.assignee && !issue.assignees.includes(filters.assignee)) {
+      return false;
+    }
+
+    if (filters.label && !issue.labels.includes(filters.label)) {
+      return false;
+    }
+
+    if (filters.milestone === FILTER_NONE) {
+      if (issue.milestone !== null) {
+        return false;
+      }
+    } else if (filters.milestone && issue.milestone !== filters.milestone) {
+      return false;
+    }
+
+    if (query && !issue.title.toLowerCase().includes(query)) {
+      return false;
+    }
+
+    for (const flag of flags) {
+      if (flag === "unanswered" && !isUnanswered(issue, now, unansweredDays)) {
+        return false;
+      }
+      if (flag === "recent" && !isRecent(issue, now, recentDays)) {
+        return false;
+      }
+      if (flag === "stale" && !isStale(issue, now, staleDays)) {
+        return false;
+      }
+      if (flag === "unassigned" && issue.assignees.length > 0) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+
+  return sortIssues(filtered, filters.sort ?? "recent");
+}
+
+/** Sorts an already filtered list. `recent` is the default: newest arrived first. */
+export function sortIssues<TIssue extends IssueLike>(
+  issues: readonly TIssue[],
+  sort: IssueSort,
+): TIssue[] {
+  const sorted = [...issues];
+
+  switch (sort) {
+    case "oldest":
+      return sorted.sort((left, right) => left.openedAt.getTime() - right.openedAt.getTime());
+    case "comments":
+      return sorted.sort((left, right) => right.commentsCount - left.commentsCount);
+    case "activity":
+      // Needs `activityAt`, which `IssueLike` does not carry: the caller that asks for
+      // this sort passes rows that have it.
+      return sorted.sort(
+        (left, right) =>
+          activityTime(right) - activityTime(left),
+      );
+    case "recent":
+    default:
+      return sorted.sort((left, right) => right.openedAt.getTime() - left.openedAt.getTime());
+  }
+}
+
+function activityTime(issue: IssueLike): number {
+  const value = (issue as { activityAt?: unknown }).activityAt;
+  return value instanceof Date ? value.getTime() : 0;
+}
+
 export type IssueHighlights<TIssue extends IssueLike = IssueLike> = {
   total: number;
   recent: number;

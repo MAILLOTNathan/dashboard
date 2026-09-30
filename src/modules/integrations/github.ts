@@ -1,5 +1,6 @@
 import {
   assertIssueShape,
+  assertMilestoneShape,
   assertProjectShape,
   parseProviderInstant,
   parseRetryAfterSeconds,
@@ -8,9 +9,15 @@ import {
   type IntegrationAdapter,
   type IssueSyncOutcome,
   type IssueSyncRequest,
+  type MilestoneSyncOutcome,
   type SyncRequest,
 } from "./adapter";
-import type { ProviderIssue, ProviderProject, SyncOutcome } from "./domain";
+import type {
+  ProviderIssue,
+  ProviderMilestone,
+  ProviderProject,
+  SyncOutcome,
+} from "./domain";
 
 /**
  * GitHub adapter (read-only).
@@ -25,8 +32,10 @@ const DEFAULT_PAGE_SIZE = 100;
 const DEFAULT_MAX_PAGES = 5;
 /** Issues are queried per repository, so the run is bounded. */
 const DEFAULT_MAX_REPOSITORIES = 20;
-const DEFAULT_ISSUE_PAGE_SIZE = 30;
+const DEFAULT_ISSUE_PAGE_SIZE = 50;
+const DEFAULT_MILESTONE_PAGE_SIZE = 50;
 const MAX_LABELS = 5;
+const MAX_ASSIGNEES = 5;
 
 type GitHubRepository = {
   id?: unknown;
@@ -57,6 +66,20 @@ type GitHubIssue = {
   labels?: unknown;
   user?: unknown;
   pull_request?: unknown;
+  assignees?: unknown;
+  milestone?: unknown;
+};
+
+/** Shape of the milestones endpoint. */
+type GitHubMilestone = {
+  id?: unknown;
+  number?: unknown;
+  title?: unknown;
+  state?: unknown;
+  due_on?: unknown;
+  open_issues?: unknown;
+  closed_issues?: unknown;
+  html_url?: unknown;
 };
 
 /** Reads the `rel="next"` link returned by GitHub; `null` means the last page. */
@@ -141,6 +164,7 @@ export function createGitHubAdapter(): IntegrationAdapter {
     provider: "GITHUB",
     requiredScopes: ["repo:read"],
     tracksIssues: true,
+    tracksMilestones: true,
 
     async listProjects(request: SyncRequest): Promise<SyncOutcome> {
       const fetchImpl = request.fetchImpl ?? fetch;
@@ -281,6 +305,88 @@ export function createGitHubAdapter(): IntegrationAdapter {
         repositoriesFailed: failed,
       };
     },
+
+    /**
+     * Milestones of the same repositories, one request each.
+     *
+     * `state=all` so a closed milestone keeps its history: a shipped milestone is
+     * information, and it is what makes the due dates comparable. GitHub returns the
+     * counters, which are the authoritative ones.
+     */
+    async listMilestones(request: IssueSyncRequest): Promise<MilestoneSyncOutcome> {
+      const fetchImpl = request.fetchImpl ?? fetch;
+      const pageSize = request.pageSize ?? DEFAULT_MILESTONE_PAGE_SIZE;
+      const maxRepositories = request.maxRepositories ?? DEFAULT_MAX_REPOSITORIES;
+      const headers: Record<string, string> = {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${request.token}`,
+        "X-GitHub-Api-Version": API_VERSION,
+      };
+
+      const { repositories, skipped } = selectRepositoriesToScan(
+        request.projects,
+        maxRepositories,
+      );
+
+      const milestones: ProviderMilestone[] = [];
+      let scanned = 0;
+      let failed = 0;
+      let lastError: ProviderError | null = null;
+
+      for (const repository of repositories) {
+        try {
+          const { data, response }: { data: unknown; response: Response } =
+            await requestJson<unknown>({
+              url: `${API_BASE}/repos/${repository}/milestones?state=all&sort=due_on&direction=asc&per_page=${pageSize}`,
+              headers,
+              fetchImpl,
+              signal: request.signal,
+              classifyError: classifyGitHubError,
+            });
+
+          if (!Array.isArray(data)) {
+            throw new ProviderError(
+              "INVALID_RESPONSE",
+              "GitHub n'a pas renvoyé une liste de jalons.",
+              { status: response.status },
+            );
+          }
+
+          for (const raw of data as GitHubMilestone[]) {
+            milestones.push(normaliseGitHubMilestone(raw, repository));
+          }
+
+          scanned += 1;
+        } catch (error) {
+          if (
+            error instanceof ProviderError &&
+            (error.code === "RATE_LIMITED" || error.code === "UNAUTHORIZED")
+          ) {
+            throw error;
+          }
+
+          if (!(error instanceof ProviderError)) {
+            throw error;
+          }
+
+          failed += 1;
+          lastError = error;
+        }
+      }
+
+      if (repositories.length > 0 && scanned === 0 && lastError) {
+        throw lastError;
+      }
+
+      return {
+        supported: true,
+        milestones,
+        fetchedAt: new Date(),
+        repositoriesScanned: scanned,
+        repositoriesSkipped: skipped,
+        repositoriesFailed: failed,
+      };
+    },
   };
 }
 
@@ -297,6 +403,8 @@ export function normaliseGitHubIssue(issue: GitHubIssue, repository: string): Pr
     title: typeof issue.title === "string" ? issue.title : "",
     url: typeof issue.html_url === "string" ? issue.html_url : "",
     authorLogin: authorLogin(issue.user),
+    assignees: issueAssignees(issue.assignees),
+    milestone: issueMilestone(issue.milestone),
     commentsCount: typeof issue.comments === "number" ? issue.comments : 0,
     labels: labelNames(issue.labels),
     openedAt: parseProviderInstant(issue.created_at, "GITHUB"),
@@ -304,6 +412,30 @@ export function normaliseGitHubIssue(issue: GitHubIssue, repository: string): Pr
   };
 
   assertIssueShape(normalised, "GITHUB");
+  return normalised;
+}
+
+export function normaliseGitHubMilestone(
+  milestone: GitHubMilestone,
+  repository: string,
+): ProviderMilestone {
+  const normalised: ProviderMilestone = {
+    externalId: String(milestone.id ?? ""),
+    repository,
+    number: typeof milestone.number === "number" ? milestone.number : 0,
+    title: typeof milestone.title === "string" ? milestone.title : "",
+    state: typeof milestone.state === "string" ? milestone.state : "unknown",
+    // A milestone without a due date is legitimate: `null`, never a made-up date.
+    dueOn: milestone.due_on ? parseProviderInstant(milestone.due_on, "GITHUB") : null,
+    issuesOpen: typeof milestone.open_issues === "number" ? milestone.open_issues : 0,
+    issuesClosed: typeof milestone.closed_issues === "number" ? milestone.closed_issues : 0,
+    url:
+      typeof milestone.html_url === "string"
+        ? milestone.html_url
+        : `https://github.com/${repository}/milestones`,
+  };
+
+  assertMilestoneShape(normalised, "GITHUB");
   return normalised;
 }
 
@@ -341,6 +473,38 @@ function authorLogin(user: unknown): string | null {
 
   const login = (user as { login?: unknown }).login;
   return typeof login === "string" && login.length > 0 ? login : null;
+}
+
+/** Assignees arrive as user objects; only the logins are kept, and only a few. */
+function issueAssignees(assignees: unknown): string[] {
+  if (!Array.isArray(assignees)) {
+    return [];
+  }
+
+  return assignees
+    .map((assignee) =>
+      typeof assignee === "object" && assignee !== null
+        ? (assignee as { login?: unknown }).login
+        : null,
+    )
+    .filter((login): login is string => typeof login === "string" && login.length > 0)
+    .slice(0, MAX_ASSIGNEES);
+}
+
+/**
+ * The milestone is reduced to its title.
+ *
+ * An issue payload carries only `title`, `number` and `state` here — no due date and no
+ * counters, which live on the milestone resource. Storing the title is enough to filter
+ * and to link the issue to the milestone description fetched on its own.
+ */
+function issueMilestone(milestone: unknown): string | null {
+  if (typeof milestone !== "object" || milestone === null) {
+    return null;
+  }
+
+  const title = (milestone as { title?: unknown }).title;
+  return typeof title === "string" && title.length > 0 ? title : null;
 }
 
 /** Labels arrive either as strings or as objects; only the names are displayed. */
