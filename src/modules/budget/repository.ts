@@ -148,6 +148,25 @@ export async function listTransactionsForSeries(
 }
 
 /**
+ * Deletes one transaction of this owner.
+ *
+ * `deleteMany` with the owner in the `where` clause rather than a read followed by a
+ * delete: one statement, and a foreign identifier simply matches nothing instead of
+ * having to be compared first. The returned count says whether anything was removed,
+ * so the caller can tell "deleted" from "already gone or not yours".
+ */
+export async function deleteTransaction(
+  userId: string,
+  transactionId: string,
+): Promise<boolean> {
+  const { count } = await getPrisma().transaction.deleteMany({
+    where: { id: transactionId, userId },
+  });
+
+  return count === 1;
+}
+
+/**
  * Owner-scoped account lookup.
  *
  * An identifier coming from a form is never trusted: filtering on `userId` means

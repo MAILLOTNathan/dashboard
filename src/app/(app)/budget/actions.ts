@@ -8,6 +8,7 @@ import {
   type ActionResult,
 } from "@/lib/actions";
 import { requireUser } from "@/lib/auth/guard";
+import { recordIdInput } from "@/lib/validation";
 import {
   accountInputSchema,
   assertAmountMatchesType,
@@ -19,9 +20,11 @@ import {
   createAccount,
   createCategory,
   createTransaction,
+  deleteTransaction,
   findAccount,
   findCategory,
 } from "@/modules/budget/repository";
+import { findCashflowLinkedToTransaction } from "@/modules/real-estate/repository";
 
 /**
  * Write Server Actions for the budget module.
@@ -135,6 +138,45 @@ export async function createTransactionAction(values: unknown): Promise<ActionRe
     });
   } catch (error) {
     return unexpectedResult("createTransaction", error);
+  }
+
+  revalidatePath("/budget");
+  revalidatePath("/dashboard");
+  return { status: "ok" };
+}
+
+/**
+ * Removes one transaction.
+ *
+ * A deliberate refusal before a deliberate deletion: a transaction linked to a
+ * property cashflow cannot be removed here. The schema would null the link, leaving
+ * the cashflow with neither an amount nor a transaction, which is precisely the state
+ * `resolveCashflowAmount` throws on — the property page would then fail for a row the
+ * owner can no longer see. Naming the property is more useful than a crash later.
+ */
+export async function deleteTransactionAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = recordIdInput.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  const link = await findCashflowLinkedToTransaction(user.id, parsed.data.id);
+  if (link) {
+    return rejectedResult(
+      "id",
+      `Cette opération est rattachée au flux du bien « ${link.propertyName} ». Supprimez d'abord ce flux dans Immobilier.`,
+    );
+  }
+
+  try {
+    const deleted = await deleteTransaction(user.id, parsed.data.id);
+    if (!deleted) {
+      return rejectedResult("id", "Opération introuvable : elle a peut-être déjà été supprimée.");
+    }
+  } catch (error) {
+    return unexpectedResult("deleteTransaction", error);
   }
 
   revalidatePath("/budget");

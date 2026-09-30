@@ -36,6 +36,16 @@ export const optionalId = z
   .nullish()
   .transform((value) => (value === null || value === undefined || value === "" ? null : value));
 
+/**
+ * Payload of a write aimed at one existing row (delete, archive).
+ *
+ * The identifier is validated like any other input: it arrives from the browser.
+ * Ownership is checked separately, in the action, against the signed-in owner.
+ */
+export const recordIdInput = z.object({
+  id: z.string().trim().min(1, "Identifiant manquant."),
+});
+
 /** A required `YYYY-MM-DD` field, converted to a calendar day at UTC midnight. */
 export const requiredDate = z
   .string()

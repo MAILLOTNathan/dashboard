@@ -16,8 +16,8 @@ Working today:
 
 - Owner authentication (Auth.js credentials, no public sign-up).
 - Personal budget: accounts, categories, transactions entered from the budget
-  page, monthly totals per currency, filters, CSV export, and two charts (a
-  12-month trend and the month's spending per category).
+  page, monthly totals per currency, filters, CSV export, deletion with confirmation,
+  and two charts (a 12-month trend and the month's spending per category).
 - Real estate: properties and cashflow entries entered from the real-estate
   page, occupancy status, totals, due dates.
 - GitHub / GitLab connections: read-only adapters, encrypted tokens, manual
@@ -28,8 +28,9 @@ Working today:
 
 Not implemented yet:
 
-- Editing or deleting an existing row: the tables are read-only once a record is
-  saved, and the budget view is a table rather than an editable spreadsheet grid.
+- Editing an existing row: a row can be created or deleted, not modified in place
+  (delete it and enter it again). The budget view is a table, not an editable grid.
+- Accounts, categories and properties cannot be deleted yet; only transactions can.
 - A scheduler entry point for automatic synchronisation (the function exists and
   is idempotent; the trigger is not shipped).
 - Bank connection, payments, accounting, tax advice — permanently out of scope.

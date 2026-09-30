@@ -81,6 +81,27 @@ export async function countProperties(userId: string): Promise<number> {
   return getPrisma().property.count({ where: { userId } });
 }
 
+/**
+ * The property cashflow that links to a transaction, if any.
+ *
+ * Used before deleting a transaction. The schema declares that relation as
+ * `onDelete: SetNull`, which would leave the cashflow with **neither** a linked
+ * transaction nor an amount of its own — the one state `resolveCashflowAmount`
+ * refuses, and which would break the property totals of this owner. So the deletion
+ * is refused instead, and the caller can name the property to fix.
+ */
+export async function findCashflowLinkedToTransaction(
+  userId: string,
+  transactionId: string,
+): Promise<{ id: string; propertyName: string } | null> {
+  const row = await getPrisma().propertyCashflow.findFirst({
+    where: { transactionId, property: { userId } },
+    select: { id: true, property: { select: { name: true } } },
+  });
+
+  return row ? { id: row.id, propertyName: row.property.name } : null;
+}
+
 /** Owner-scoped property lookup: a form identifier is never trusted. */
 export async function findProperty(
   userId: string,

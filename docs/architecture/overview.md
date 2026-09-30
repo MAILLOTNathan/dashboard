@@ -66,6 +66,19 @@ flowchart LR
 - After a write, the action revalidates the affected paths (`/budget`,
   `/real-estate`, `/dashboard`); nothing is cached across owners.
 
+### Deletion
+
+A transaction can be removed from the budget table, after a confirmation step that
+names the line. There is no bin: the row is gone, which is why the confirmation is a
+step of its own rather than a single click.
+
+A transaction linked to a property cashflow is **refused**, with the property named.
+The relation is declared `onDelete: SetNull`, so the database would otherwise null the
+link and leave the cashflow with neither a transaction nor an amount — the one state
+`resolveCashflowAmount` throws on, which would break that owner's property totals for
+a row they can no longer see. Refusing is louder and safer than a cascade nobody
+asked for: a cascade here would silently change what a property is worth.
+
 ## Data conventions
 
 - **Amounts** are exact decimals (`numeric(18, 2)`), never floating point. The
@@ -187,8 +200,8 @@ still has open issues that were not seen.
 - No bank connector, no payment, no accounting or tax advice.
 - No writing to GitHub or GitLab.
 - Transactions, accounts, categories, properties and cashflow entries can be
-  created from the pages, but existing rows cannot yet be edited inline or
-  deleted, and the budget view is a table rather than a spreadsheet grid.
+  created from the pages; transactions can also be deleted. Editing a row in place,
+  and deleting the other kinds, are not implemented.
 - No document/attachment storage.
 - The integrations page triggers a synchronisation on demand; no scheduler entry
   point (cron unit, platform job) ships with the repository yet.

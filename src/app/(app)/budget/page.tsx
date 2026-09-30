@@ -39,6 +39,7 @@ import {
 } from "@/modules/budget/totals";
 import { AccountForm } from "./account-form";
 import { CategoryForm } from "./category-form";
+import { DeleteTransactionButton } from "./delete-transaction-button";
 import { TransactionForm } from "./transaction-form";
 
 export const dynamic = "force-dynamic";
@@ -363,7 +364,7 @@ export default async function BudgetPage({
 
       <Card
         title={`${transactions.length} opération${transactions.length > 1 ? "s" : ""}`}
-        description="L'édition directe dans le tableau n'est pas encore implémentée : utilisez le formulaire « Nouvelle opération » ci-dessus, puis rechargez pour corriger une ligne."
+        description="La suppression demande une confirmation et n'est pas annulable. Une opération rattachée à un flux immobilier doit être détachée d'abord."
       >
         {transactions.length === 0 ? (
           <EmptyState
@@ -391,6 +392,9 @@ export default async function BudgetPage({
                 </th>
                 <th scope="col" className={`${thClass} text-right`}>
                   Montant
+                </th>
+                <th scope="col" className={thClass}>
+                  Action
                 </th>
               </tr>
             </thead>
@@ -420,6 +424,12 @@ export default async function BudgetPage({
                       amount: transaction.amount,
                       currency: transaction.currency,
                     })}
+                  </td>
+                  <td className={tdClass}>
+                    <DeleteTransactionButton
+                      transactionId={transaction.id}
+                      label={transaction.label}
+                    />
                   </td>
                 </tr>
               ))}
