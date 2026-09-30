@@ -115,6 +115,23 @@ flowchart LR
   the flat list is capped for readability, a repository is not. Focusing one
   repository (`?repo=owner/name`) recomputes every indicator on that repository
   alone, so the figures always describe the rows displayed beside them.
+- Budget charts — two, each answering a question the monthly table cannot. Both reuse
+  the aggregation rules above instead of defining their own, so a number in a chart
+  always equals the same number in a table:
+  - *Trend over 12 months* — one point per month ending on the selected month, income
+    above the axis and expenses below, with the monthly net printed above each column.
+    Transfers are excluded. Months without data are drawn as zeros rather than skipped,
+    so a gap reads as "nothing recorded" and the time axis keeps its scale.
+  - *Where the money goes* — the selected month per category, largest first, with each
+    share of the total. `EXPENSE` by default, `INCOME` through `?breakdown=INCOME`. A
+    refund reduces its category, exactly as it reduces the monthly total, so a category
+    can legitimately be negative. Transactions without a category keep their own
+    "Sans catégorie" line: dropping them would make the bars fail to add up. The
+    smallest categories are merged into one "Autres" line once the row budget is
+    reached, and the total stays exact.
+  Charts are plain server-rendered markup, with the exact figures printed next to the
+  drawing: no charting dependency, no client-side rendering, and nothing is lost by a
+  reader who cannot use a chart.
 
 An indicator is only displayed once its definition is written down, which is
 what this section is for.

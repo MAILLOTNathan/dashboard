@@ -16,7 +16,8 @@ Working today:
 
 - Owner authentication (Auth.js credentials, no public sign-up).
 - Personal budget: accounts, categories, transactions entered from the budget
-  page, monthly totals per currency, filters, CSV export.
+  page, monthly totals per currency, filters, CSV export, and two charts (a
+  12-month trend and the month's spending per category).
 - Real estate: properties and cashflow entries entered from the real-estate
   page, occupancy status, totals, due dates.
 - GitHub / GitLab connections: read-only adapters, encrypted tokens, manual

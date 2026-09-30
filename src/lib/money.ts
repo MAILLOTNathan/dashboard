@@ -88,6 +88,24 @@ export function toDecimalString(value: Decimal): string {
   return value.toFixed(AMOUNT_DECIMALS);
 }
 
+/**
+ * Compact amount for an axis label or a bar, for example "1,2 k €".
+ *
+ * Display only, and deliberately lossy: the exact figure is always printed next to
+ * it. Never feed the result back into a calculation.
+ */
+export function formatCompactAmount(
+  value: Money,
+  options: { locale?: string } = {},
+): string {
+  return new Intl.NumberFormat(options.locale ?? "fr-FR", {
+    style: "currency",
+    currency: value.currency,
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value.amount.toNumber());
+}
+
 export class InvalidAmountError extends Error {
   constructor(readonly input: string, reason: string) {
     super(`Invalid amount "${input}": ${reason}`);

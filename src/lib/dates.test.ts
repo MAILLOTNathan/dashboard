@@ -3,8 +3,10 @@ import {
   currentMonthKey,
   formatMonthLabel,
   formatDateOnly,
+  formatShortMonthLabel,
   InvalidDateError,
   isValidTimeZone,
+  monthKeysEndingAt,
   monthRange,
   parseDateOnly,
   parseMonthKey,
@@ -109,5 +111,49 @@ describe("isValidTimeZone", () => {
 
   it("rejects an unknown zone", () => {
     expect(isValidTimeZone("Europe/Atlantis")).toBe(false);
+  });
+});
+
+describe("monthKeysEndingAt", () => {
+  it("returns the window oldest first, ending on the requested month", () => {
+    expect(monthKeysEndingAt("2026-09", 3)).toEqual(["2026-07", "2026-08", "2026-09"]);
+  });
+
+  it("returns a single month when asked for one", () => {
+    expect(monthKeysEndingAt("2026-09", 1)).toEqual(["2026-09"]);
+  });
+
+  it("rolls the year back across January", () => {
+    // The case that breaks a naive month arithmetic.
+    expect(monthKeysEndingAt("2026-01", 3)).toEqual(["2025-11", "2025-12", "2026-01"]);
+  });
+
+  it("spans a full year without repeating or skipping a month", () => {
+    const keys = monthKeysEndingAt("2026-09", 12);
+
+    expect(keys).toHaveLength(12);
+    expect(new Set(keys).size).toBe(12);
+    expect(keys[0]).toBe("2025-10");
+    expect(keys[11]).toBe("2026-09");
+  });
+
+  it("every key is a valid month key", () => {
+    for (const key of monthKeysEndingAt("2024-02", 12)) {
+      expect(() => parseMonthKey(key)).not.toThrow();
+    }
+  });
+
+  it("rejects a window that does not make sense", () => {
+    expect(() => monthKeysEndingAt("2026-09", 0)).toThrow(RangeError);
+    expect(() => monthKeysEndingAt("2026-09", 1.5)).toThrow(RangeError);
+  });
+});
+
+describe("formatShortMonthLabel", () => {
+  it("keeps the abbreviated month and a two-digit year", () => {
+    const label = formatShortMonthLabel(2025, 10);
+
+    expect(label).toMatch(/oct/i);
+    expect(label).toContain("25");
   });
 });

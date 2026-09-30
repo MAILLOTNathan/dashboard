@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { CategoryBars, MonthlyTrendChart, type TrendPoint } from "@/components/charts";
 import {
   Card,
   EmptyState,
@@ -14,6 +15,8 @@ import {
   currentMonthKey,
   formatDateOnly,
   formatMonthLabel,
+  formatShortMonthLabel,
+  monthKeysEndingAt,
   monthRange,
   parseMonthKey,
   toDateOnlyString,
@@ -23,13 +26,27 @@ import {
   TRANSACTION_TYPES,
   type TransactionType,
 } from "@/modules/budget/domain";
-import { listAccounts, listCategories, listTransactions } from "@/modules/budget/repository";
-import { computeTotalsByCurrency } from "@/modules/budget/totals";
+import {
+  listAccounts,
+  listCategories,
+  listTransactions,
+  listTransactionsForSeries,
+} from "@/modules/budget/repository";
+import { buildCategoryBreakdown, buildMonthlySeries } from "@/modules/budget/series";
+import {
+  computeTotalsByCurrency,
+  groupTransactionsByCurrency,
+} from "@/modules/budget/totals";
 import { AccountForm } from "./account-form";
 import { CategoryForm } from "./category-form";
 import { TransactionForm } from "./transaction-form";
 
 export const dynamic = "force-dynamic";
+
+/** Months shown on the trend chart: a year is the shortest period that shows a season. */
+const TREND_MONTHS = 12;
+/** Categories drawn on the breakdown before the tail is merged into "Autres". */
+const BREAKDOWN_LIMIT = 8;
 
 const TYPE_LABELS: Record<TransactionType, string> = {
   INCOME: "Recette",
@@ -64,8 +81,17 @@ export default async function BudgetPage({
   const rawType = readParam(params, "type");
   const type = TRANSACTION_TYPES.find((value) => value === rawType);
   const search = readParam(params, "q");
+  // Which side of the ledger the breakdown shows. Expenses by default: that is the
+  // question people actually ask.
+  const breakdownKind: TransactionType =
+    readParam(params, "breakdown") === "INCOME" ? "INCOME" : "EXPENSE";
 
-  const [accounts, categories, transactions] = await Promise.all([
+  // The charts read the same filters as the table, but over a year instead of one
+  // month: a trend line built from a single month would say nothing.
+  const trendMonthKeys = monthKeysEndingAt(monthKey, TREND_MONTHS);
+  const trendStart = monthRange(Number(trendMonthKeys[0].slice(0, 4)), Number(trendMonthKeys[0].slice(5, 7))).start;
+
+  const [accounts, categories, transactions, series] = await Promise.all([
     listAccounts(user.id),
     listCategories(user.id),
     listTransactions(user.id, {
@@ -76,10 +102,19 @@ export default async function BudgetPage({
       type,
       search,
     }),
+    listTransactionsForSeries(user.id, {
+      from: trendStart,
+      to: range.end,
+      accountId,
+      categoryId,
+      type,
+      search,
+    }),
   ]);
 
   const totals = computeTotalsByCurrency(transactions);
   const hasAccounts = accounts.length > 0;
+  const seriesByCurrency = [...groupTransactionsByCurrency(series.transactions)];
   const exportParams = new URLSearchParams({ month: monthKey });
   if (accountId) exportParams.set("account", accountId);
   if (categoryId) exportParams.set("category", categoryId);
@@ -254,6 +289,77 @@ export default async function BudgetPage({
           ))}
         </div>
       ) : null}
+
+      {seriesByCurrency.length === 0 ? (
+        <Notice tone="info">
+          Aucune opération sur les {TREND_MONTHS} derniers mois : les graphiques apparaîtront dès
+          la première saisie. Un graphique vide n&apos;est pas un solde à zéro.
+        </Notice>
+      ) : (
+        seriesByCurrency.map(([currency, currencyTransactions]) => {
+          const windowStart = range.start;
+          const points: TrendPoint[] = buildMonthlySeries(
+            currencyTransactions,
+            trendMonthKeys,
+          ).map((point) => ({
+            monthKey: point.monthKey,
+            label: formatShortMonthLabel(point.year, point.month),
+            income: point.totals.income,
+            expenses: point.totals.expenses,
+            net: point.totals.net,
+          }));
+
+          const breakdown = buildCategoryBreakdown(
+            currencyTransactions.filter(
+              (transaction) =>
+                transaction.operationDate.getTime() >= windowStart.getTime() &&
+                transaction.operationDate.getTime() < range.end.getTime(),
+            ),
+            { kind: breakdownKind, limit: BREAKDOWN_LIMIT },
+          );
+
+          const breakdownParams = new URLSearchParams({ month: monthKey });
+          if (accountId) breakdownParams.set("account", accountId);
+          if (categoryId) breakdownParams.set("category", categoryId);
+          if (type) breakdownParams.set("type", type);
+          if (search) breakdownParams.set("q", search);
+          breakdownParams.set("breakdown", breakdownKind === "EXPENSE" ? "INCOME" : "EXPENSE");
+
+          return (
+            <div key={currency} className="flex flex-col gap-4">
+              <Card
+                title={`Tendance sur ${TREND_MONTHS} mois — ${currency}`}
+                description={`Recettes au-dessus de l'axe, dépenses en dessous, mois par mois jusqu'à ${formatMonthLabel(year, month)}. Les transferts entre comptes sont exclus, comme partout ailleurs.${
+                  series.truncated
+                    ? " Attention : le nombre d'opérations de la période dépasse la limite de lecture, les totaux affichés sont donc partiels."
+                    : ""
+                }`}
+              >
+                <MonthlyTrendChart points={points} currency={currency} />
+              </Card>
+
+              <Card
+                title={`${breakdownKind === "EXPENSE" ? "Où part l'argent" : "D'où vient l'argent"} — ${formatMonthLabel(year, month)}`}
+                description="Part de chaque catégorie sur le mois sélectionné, avec les mêmes filtres que le tableau. Une ligne « Sans catégorie » apparaît quand des opérations n'en ont pas : les bars doivent tomber juste."
+                actions={
+                  <Link
+                    href={`/budget?${breakdownParams.toString()}`}
+                    className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                  >
+                    Voir les {breakdownKind === "EXPENSE" ? "recettes" : "dépenses"}
+                  </Link>
+                }
+              >
+                <CategoryBars
+                  entries={breakdown.entries}
+                  currency={currency}
+                  total={breakdown.total}
+                />
+              </Card>
+            </div>
+          );
+        })
+      )}
 
       <Card
         title={`${transactions.length} opération${transactions.length > 1 ? "s" : ""}`}

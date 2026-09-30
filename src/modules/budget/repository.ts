@@ -121,6 +121,33 @@ export async function countTransactions(userId: string): Promise<number> {
 }
 
 /**
+ * Rows a chart window may read.
+ *
+ * A year of manual entries is far below this bound. It exists so a pathological
+ * window cannot pull an unbounded result set into the page, and reaching it is
+ * reported through `truncated`: a chart that quietly under-reports a year would be
+ * exactly the kind of silent lie this dashboard avoids.
+ */
+export const SERIES_ROW_LIMIT = 5000;
+
+/**
+ * Transactions covering a full window, for the charts.
+ *
+ * Deliberately separate from `listTransactions`: the table shows a page, a series
+ * needs every row of its window, and the two bounds are different on purpose.
+ */
+export async function listTransactionsForSeries(
+  userId: string,
+  filters: TransactionFilters,
+): Promise<{ transactions: TransactionRecord[]; truncated: boolean }> {
+  // One row more than the bound: its presence is what proves the window was cut.
+  const rows = await listTransactions(userId, { ...filters, take: SERIES_ROW_LIMIT + 1 });
+  const truncated = rows.length > SERIES_ROW_LIMIT;
+
+  return { transactions: truncated ? rows.slice(0, SERIES_ROW_LIMIT) : rows, truncated };
+}
+
+/**
  * Owner-scoped account lookup.
  *
  * An identifier coming from a form is never trusted: filtering on `userId` means

@@ -96,7 +96,19 @@ export function groupByCurrency(
 export function computeTotalsByCurrency(
   transactions: readonly TransactionRecord[],
 ): MonthlyTotals[] {
-  return [...groupByCurrency(transactions).values()].map((group) =>
+  return [...groupTransactionsByCurrency(transactions).values()].map((group) =>
     computeMonthlyTotals(group),
   );
+}
+
+/**
+ * Groups transactions by their currency.
+ *
+ * Exported because every aggregation must obey the same rule: a total is always
+ * computed for one currency, never across two (see `computeMonthlyTotals`).
+ */
+export function groupTransactionsByCurrency(
+  transactions: readonly TransactionRecord[],
+): Map<Currency, TransactionRecord[]> {
+  return groupByCurrency(transactions);
 }

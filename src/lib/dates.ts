@@ -129,3 +129,43 @@ export function formatMonthLabel(year: number, month: number, locale = "fr-FR"):
     year: "numeric",
   }).format(new Date(Date.UTC(year, month - 1, 1)));
 }
+
+/** Short axis label, for example "oct. 25". */
+export function formatShortMonthLabel(
+  year: number,
+  month: number,
+  locale = "fr-FR",
+): string {
+  return new Intl.DateTimeFormat(locale, {
+    timeZone: "UTC",
+    month: "short",
+    year: "2-digit",
+  }).format(new Date(Date.UTC(year, month - 1, 1)));
+}
+
+/**
+ * The `count` month keys ending with `monthKey`, oldest first.
+ *
+ * Month keys follow the same convention as the rest of the project: computed in
+ * UTC, so a chart window never shifts by a day because of the reader's time zone.
+ */
+export function monthKeysEndingAt(monthKey: string, count: number): string[] {
+  if (!Number.isInteger(count) || count < 1) {
+    throw new RangeError(`Invalid month count: ${count}`);
+  }
+
+  const { year, month } = parseMonthKey(monthKey);
+  const keys: string[] = [];
+
+  for (let offset = count - 1; offset >= 0; offset -= 1) {
+    // `monthsBack` is negative for a January window: the floor/positive modulo pair
+    // rolls the year back correctly.
+    const monthsBack = month - 1 - offset;
+    const shiftedYear = year + Math.floor(monthsBack / 12);
+    const shiftedMonth = (((monthsBack % 12) + 12) % 12) + 1;
+
+    keys.push(`${String(shiftedYear).padStart(4, "0")}-${String(shiftedMonth).padStart(2, "0")}`);
+  }
+
+  return keys;
+}
