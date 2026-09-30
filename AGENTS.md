@@ -140,3 +140,13 @@ For any financial feature, include at least one test verifying a calculation or 
 Before starting a task, identify the module concerned, the data handled, the required rights and the acceptance criteria. If a structuring decision is missing — for example the scope of the company GitLab, document storage or the authentication mode — ask for a targeted clarification instead of inventing a requirement.
 
 At the end, provide: what changed, the migrations or variables to plan for, the commands actually run with their result, the known limitations and the strictly necessary next steps. Do not present a mockup as a connected feature or a simulated synchronisation as a real synchronisation.
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->

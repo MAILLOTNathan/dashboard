@@ -13,10 +13,16 @@ import {
 import { requireUser } from "@/lib/auth/guard";
 import { formatDateOnly } from "@/lib/dates";
 import { formatMoney } from "@/lib/money";
+import { listTransactions } from "@/modules/budget/repository";
 import { listProperties } from "@/modules/real-estate/repository";
 import type { PropertyOccupancy } from "@/modules/real-estate/domain";
+import { CashflowForm, type TransactionOption } from "./cashflow-form";
+import { PropertyForm } from "./property-form";
 
 export const dynamic = "force-dynamic";
+
+/** Enough recent operations to pick from without loading the whole history. */
+const TRANSACTION_OPTION_LIMIT = 100;
 
 const OCCUPANCY_LABELS: Record<PropertyOccupancy, string> = {
   RENTED: "Loué",
@@ -28,7 +34,19 @@ const OCCUPANCY_LABELS: Record<PropertyOccupancy, string> = {
 
 export default async function RealEstatePage() {
   const user = await requireUser();
-  const properties = await listProperties(user.id);
+  const [properties, recentTransactions] = await Promise.all([
+    listProperties(user.id),
+    // A cashflow entry can be linked to an operation recorded in the budget.
+    listTransactions(user.id, { take: TRANSACTION_OPTION_LIMIT }),
+  ]);
+
+  // Reduced to strings: the form is a client component and never receives a Decimal.
+  const transactionOptions: TransactionOption[] = recentTransactions.map((transaction) => ({
+    id: transaction.id,
+    label: transaction.label,
+    date: formatDateOnly(transaction.operationDate),
+    amountText: formatMoney({ amount: transaction.amount, currency: transaction.currency }),
+  }));
 
   const rentedCount = properties.filter((property) => property.occupancy === "RENTED").length;
   const vacantCount = properties.filter((property) => property.occupancy === "VACANT").length;
@@ -47,6 +65,33 @@ export default async function RealEstatePage() {
           </Link>
         }
       />
+
+      <Card
+        title="Saisie"
+        description="Ajout manuel des biens et de leurs flux. Aucun bien n'est présumé loué."
+      >
+        <div className="flex flex-col gap-3">
+          <details open>
+            <summary className="cursor-pointer text-sm font-medium">Nouveau bien</summary>
+            <div className="pt-3">
+              <PropertyForm />
+            </div>
+          </details>
+
+          <details>
+            <summary className="cursor-pointer text-sm font-medium">Nouveau flux</summary>
+            <div className="pt-3">
+              <CashflowForm
+                properties={properties.map((property) => ({
+                  id: property.id,
+                  name: property.name,
+                }))}
+                transactions={transactionOptions}
+              />
+            </div>
+          </details>
+        </div>
+      </Card>
 
       {properties.length === 0 ? (
         <EmptyState

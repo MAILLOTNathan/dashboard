@@ -4,6 +4,7 @@ import {
   cashflowInputSchema,
   computePropertyTotals,
   isCashflowOverdue,
+  propertyInputSchema,
   resolveCashflowAmount,
   UnresolvedCashflowError,
   type CashflowEntry,
@@ -192,5 +193,99 @@ describe("cashflowInputSchema", () => {
     });
 
     expect(result.success).toBe(false);
+  });
+});
+
+describe("propertyInputSchema", () => {
+  /** Values as the HTML form sends them: everything is a string, empty means unset. */
+  const formValues = {
+    name: "Appartement de test",
+    address: "",
+    occupancy: "VACANT",
+    purchaseDate: "",
+    saleDate: "",
+    notes: "",
+  };
+
+  it("accepts a property with no address, no dates and no notes", () => {
+    const result = propertyInputSchema.safeParse(formValues);
+
+    expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({
+      address: null,
+      purchaseDate: null,
+      saleDate: null,
+      notes: null,
+      occupancy: "VACANT",
+    });
+  });
+
+  it("converts an acquisition date into a calendar day", () => {
+    const result = propertyInputSchema.safeParse({ ...formValues, purchaseDate: "2021-06-15" });
+
+    expect(result.data?.purchaseDate?.toISOString()).toBe("2021-06-15T00:00:00.000Z");
+  });
+
+  it("rejects an impossible date rather than shifting it", () => {
+    expect(propertyInputSchema.safeParse({ ...formValues, saleDate: "2026-13-01" }).success).toBe(
+      false,
+    );
+  });
+
+  it("requires a name", () => {
+    expect(propertyInputSchema.safeParse({ ...formValues, name: "   " }).success).toBe(false);
+  });
+});
+
+describe("cashflowInputSchema, as filled by the form", () => {
+  it("accepts a standalone entry: amount typed, no transaction selected", () => {
+    const result = cashflowInputSchema.safeParse({
+      propertyId: "property-1",
+      kind: "EXPENSE",
+      label: "Taxe foncière",
+      amount: "-450,00",
+      transactionId: "",
+      currency: "EUR",
+      dueDate: "",
+      settledAt: "",
+      notes: "",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.data?.amount?.toFixed(2)).toBe("-450.00");
+    expect(result.data?.transactionId).toBeNull();
+    expect(result.data?.dueDate).toBeNull();
+  });
+
+  it("accepts a linked entry when the amount field is left empty", () => {
+    const result = cashflowInputSchema.safeParse({
+      propertyId: "property-1",
+      kind: "INCOME",
+      label: "Loyer",
+      amount: "",
+      transactionId: "tx-1",
+      dueDate: "2026-10-05",
+      settledAt: "",
+      notes: "",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.data?.amount).toBeNull();
+    // No currency is sent with a linked entry: the action reads the transaction's.
+    expect(result.data?.currency).toBeUndefined();
+    expect(result.data?.dueDate?.toISOString()).toBe("2026-10-05T00:00:00.000Z");
+  });
+
+  it("rejects an unreadable amount with a French message", () => {
+    const result = cashflowInputSchema.safeParse({
+      propertyId: "property-1",
+      kind: "EXPENSE",
+      label: "Taxe foncière",
+      amount: "12,345",
+      currency: "EUR",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.some((issue) => /Montant invalide/.test(issue.message))).toBe(true);
   });
 });

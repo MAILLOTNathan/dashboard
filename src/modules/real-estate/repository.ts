@@ -81,6 +81,19 @@ export async function countProperties(userId: string): Promise<number> {
   return getPrisma().property.count({ where: { userId } });
 }
 
+/** Owner-scoped property lookup: a form identifier is never trusted. */
+export async function findProperty(
+  userId: string,
+  propertyId: string,
+): Promise<{ id: string; name: string } | null> {
+  const row = await getPrisma().property.findFirst({
+    where: { id: propertyId, userId },
+    select: { id: true, name: true },
+  });
+
+  return row;
+}
+
 export async function createProperty(input: {
   userId: string;
   name: string;

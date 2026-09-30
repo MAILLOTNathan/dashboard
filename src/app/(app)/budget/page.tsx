@@ -16,6 +16,7 @@ import {
   formatMonthLabel,
   monthRange,
   parseMonthKey,
+  toDateOnlyString,
 } from "@/lib/dates";
 import { formatMoney } from "@/lib/money";
 import {
@@ -24,6 +25,9 @@ import {
 } from "@/modules/budget/domain";
 import { listAccounts, listCategories, listTransactions } from "@/modules/budget/repository";
 import { computeTotalsByCurrency } from "@/modules/budget/totals";
+import { AccountForm } from "./account-form";
+import { CategoryForm } from "./category-form";
+import { TransactionForm } from "./transaction-form";
 
 export const dynamic = "force-dynamic";
 
@@ -99,10 +103,42 @@ export default async function BudgetPage({
 
       {!hasAccounts ? (
         <Notice tone="warning">
-          Aucun compte n&apos;est enregistré. Créez d&apos;abord un compte de suivi manuel :
-          aucune donnée bancaire n&apos;est importée automatiquement.
+          Aucun compte n&apos;est enregistré. Créez-en un ci-dessous avant de saisir une
+          opération : aucune donnée bancaire n&apos;est importée automatiquement.
         </Notice>
       ) : null}
+
+      <Card
+        title="Saisie"
+        description="Ajout manuel. Rien n'est importé d'une banque et rien n'est envoyé à un tiers."
+      >
+        <div className="flex flex-col gap-3">
+          <details open>
+            <summary className="cursor-pointer text-sm font-medium">Nouvelle opération</summary>
+            <div className="pt-3">
+              <TransactionForm
+                accounts={accounts}
+                categories={categories}
+                today={toDateOnlyString(new Date())}
+              />
+            </div>
+          </details>
+
+          <details>
+            <summary className="cursor-pointer text-sm font-medium">Nouveau compte</summary>
+            <div className="pt-3">
+              <AccountForm />
+            </div>
+          </details>
+
+          <details>
+            <summary className="cursor-pointer text-sm font-medium">Nouvelle catégorie</summary>
+            <div className="pt-3">
+              <CategoryForm />
+            </div>
+          </details>
+        </div>
+      </Card>
 
       <Card title="Filtres">
         <form method="get" action="/budget" className="flex flex-wrap items-end gap-3">
@@ -221,7 +257,7 @@ export default async function BudgetPage({
 
       <Card
         title={`${transactions.length} opération${transactions.length > 1 ? "s" : ""}`}
-        description="L'édition directe dans le tableau n'est pas encore implémentée : les opérations se créent depuis le module budget."
+        description="L'édition directe dans le tableau n'est pas encore implémentée : utilisez le formulaire « Nouvelle opération » ci-dessus, puis rechargez pour corriger une ligne."
       >
         {transactions.length === 0 ? (
           <EmptyState

@@ -9,15 +9,16 @@ project intentions and `docs/architecture/overview.md` for the design.
 ## Status
 
 This is a **base project**: the foundations are in place and verified, and the
-first functional slice (budget read view, real-estate read view, CSV export,
+first functional slice (data entry, budget view, real-estate view, CSV export,
 provider adapters) is implemented.
 
 Working today:
 
 - Owner authentication (Auth.js credentials, no public sign-up).
-- Personal budget: accounts, categories, transactions, monthly totals per
-  currency, filters, CSV export.
-- Real estate: properties, occupancy status, cashflow entries, totals.
+- Personal budget: accounts, categories, transactions entered from the budget
+  page, monthly totals per currency, filters, CSV export.
+- Real estate: properties and cashflow entries entered from the real-estate
+  page, occupancy status, totals, due dates.
 - GitHub / GitLab connections: read-only adapters, encrypted tokens, manual
   synchronisation, project snapshots.
 - Dashboard with indicators derived from real data, distinguishing "no data",
@@ -25,8 +26,8 @@ Working today:
 
 Not implemented yet:
 
-- Inline editing in the spreadsheet view (transactions are created through the
-  module API; the pages are read-only).
+- Editing or deleting an existing row: the tables are read-only once a record is
+  saved, and the budget view is a table rather than an editable spreadsheet grid.
 - A scheduler entry point for automatic synchronisation (the function exists and
   is idempotent; the trigger is not shipped).
 - Bank connection, payments, accounting, tax advice — permanently out of scope.
@@ -127,6 +128,13 @@ compose.yaml
 - Secrets stay server-side. `.env` is git-ignored; only `.env.example` is
   versioned, with fictitious values.
 - Provider tokens are encrypted with AES-256-GCM before being stored.
+- Amounts are typed with a sign: a rent is `900,00`, a charge is `-45,90`. A
+  positive amount on an expense is a reimbursement. The amount is read in the
+  currency of its account, which is never asked for twice.
+- A property cashflow is either a typed amount **or** a link to a transaction,
+  never both: otherwise the same money would be counted twice.
+- The write forms validate in the browser with zod (react-hook-form) and the
+  Server Action validates the same payload again before touching the database.
 
 ## Synchronisation
 

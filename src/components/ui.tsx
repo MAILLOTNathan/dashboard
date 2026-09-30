@@ -184,3 +184,47 @@ export const thClass =
 
 export const tdClass =
   "border-b border-zinc-100 px-3 py-2 align-top dark:border-zinc-800";
+
+/** Shared control styling, so every form in the dashboard looks the same. */
+export const inputClass =
+  "w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100";
+
+export const submitClass =
+  "rounded-md bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-900";
+
+/**
+ * A labelled control.
+ *
+ * The error message is rendered next to the field and announced with `role`,
+ * rather than signalled by colour only: a validation failure must stay readable.
+ */
+export function Field({
+  label,
+  htmlFor,
+  error,
+  hint,
+  children,
+}: {
+  label: string;
+  htmlFor: string;
+  error?: string;
+  hint?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-1 text-sm">
+      <label htmlFor={htmlFor} className="font-medium">
+        {label}
+      </label>
+      {children}
+      {hint ? (
+        <p className="text-xs text-zinc-500 dark:text-zinc-400">{hint}</p>
+      ) : null}
+      {error ? (
+        <p className="text-xs text-rose-700 dark:text-rose-400" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}

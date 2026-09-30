@@ -120,6 +120,65 @@ export async function countTransactions(userId: string): Promise<number> {
   return getPrisma().transaction.count({ where: { userId } });
 }
 
+/**
+ * Owner-scoped account lookup.
+ *
+ * An identifier coming from a form is never trusted: filtering on `userId` means
+ * a foreign identifier is simply not found. The account also carries the currency
+ * of the transactions recorded on it.
+ */
+export async function findAccount(
+  userId: string,
+  accountId: string,
+): Promise<AccountSummary | null> {
+  const row = await getPrisma().account.findFirst({
+    where: { id: accountId, userId, archivedAt: null },
+    select: { id: true, name: true, type: true, currency: true },
+  });
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    name: row.name,
+    type: row.type as AccountType,
+    currency: assertCurrency(row.currency),
+  };
+}
+
+/** Owner-scoped category lookup, used the same way as `findAccount`. */
+export async function findCategory(
+  userId: string,
+  categoryId: string,
+): Promise<CategorySummary | null> {
+  const row = await getPrisma().category.findFirst({
+    where: { id: categoryId, userId },
+    select: { id: true, name: true, kind: true },
+  });
+
+  return row ? { id: row.id, name: row.name, kind: row.kind } : null;
+}
+
+/**
+ * Light owner-scoped transaction lookup.
+ *
+ * Used to link a real-estate cashflow entry to a transaction: the entry stores
+ * no amount of its own, so it needs the transaction's currency and label.
+ */
+export async function findTransactionRef(
+  userId: string,
+  transactionId: string,
+): Promise<{ id: string; label: string; currency: Currency } | null> {
+  const row = await getPrisma().transaction.findFirst({
+    where: { id: transactionId, userId },
+    select: { id: true, label: true, currency: true },
+  });
+
+  return row ? { id: row.id, label: row.label, currency: assertCurrency(row.currency) } : null;
+}
+
 export async function createAccount(input: {
   userId: string;
   name: string;

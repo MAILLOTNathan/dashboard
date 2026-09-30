@@ -1,6 +1,7 @@
 import Decimal from "decimal.js";
 import { z } from "zod";
-import { parseAmountInput, type Currency } from "@/lib/money";
+import type { Currency } from "@/lib/money";
+import { currencyCode, optionalAmount, optionalDate, optionalId, optionalText } from "@/lib/validation";
 
 /**
  * Real-estate module.
@@ -139,45 +140,39 @@ export function isCashflowOverdue(
   return entry.dueDate.getTime() < today.getTime();
 }
 
-const dateOnly = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "Date attendue au format AAAA-MM-JJ.");
-
 export const propertyInputSchema = z.object({
   name: z.string().trim().min(1, "Le nom est requis.").max(120),
-  address: z.string().trim().max(300).nullable().default(null),
+  address: optionalText(300, "L'adresse est limitée à 300 caractères."),
   occupancy: z.enum(PROPERTY_OCCUPANCIES).default("VACANT"),
-  purchaseDate: dateOnly.nullable().default(null),
-  saleDate: dateOnly.nullable().default(null),
-  notes: z.string().trim().max(2000).nullable().default(null),
+  purchaseDate: optionalDate,
+  saleDate: optionalDate,
+  notes: optionalText(2000, "Les notes sont limitées à 2000 caractères."),
 });
 
 export type PropertyInput = z.input<typeof propertyInputSchema>;
+export type ValidatedPropertyInput = z.output<typeof propertyInputSchema>;
 
+/**
+ * Input contract for a cashflow entry.
+ *
+ * Exactly one of `amount` and `transactionId` is required, which is what keeps a
+ * linked transaction from being counted twice (see the double-counting rule
+ * above). `currency` is optional: for a linked entry the action reads it from the
+ * transaction, so a property total can never mix two currencies.
+ */
 export const cashflowInputSchema = z
   .object({
-    propertyId: z.string().min(1),
+    propertyId: z.string().trim().min(1, "Un bien est requis."),
     kind: z.enum(CASHFLOW_KINDS),
     label: z.string().trim().min(1, "Le libellé est requis.").max(200),
     /** Standalone entries only. */
-    amount: z
-      .string()
-      .min(1)
-      .transform((value, ctx) => {
-        try {
-          return parseAmountInput(value);
-        } catch {
-          ctx.addIssue({ code: "custom", message: "Montant invalide." });
-          return z.NEVER;
-        }
-      })
-      .optional(),
+    amount: optionalAmount,
     /** Links the entry to an existing transaction instead of declaring an amount. */
-    transactionId: z.string().min(1).nullable().default(null),
-    currency: z.string().trim().length(3).default("EUR"),
-    dueDate: dateOnly.nullable().default(null),
-    settledAt: dateOnly.nullable().default(null),
-    notes: z.string().trim().max(2000).nullable().default(null),
+    transactionId: optionalId,
+    currency: currencyCode.optional(),
+    dueDate: optionalDate,
+    settledAt: optionalDate,
+    notes: optionalText(2000, "Les notes sont limitées à 2000 caractères."),
   })
   .refine((value) => Boolean(value.amount) !== Boolean(value.transactionId), {
     message:
@@ -186,3 +181,4 @@ export const cashflowInputSchema = z
   });
 
 export type CashflowInput = z.input<typeof cashflowInputSchema>;
+export type ValidatedCashflowInput = z.output<typeof cashflowInputSchema>;

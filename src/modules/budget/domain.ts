@@ -1,6 +1,13 @@
 import Decimal from "decimal.js";
 import { z } from "zod";
-import { parseAmountInput, type Currency, assertCurrency } from "@/lib/money";
+import type { Currency } from "@/lib/money";
+import {
+  amount,
+  currencyCode,
+  optionalId,
+  optionalText,
+  requiredDate,
+} from "@/lib/validation";
 
 /**
  * Budget module: accounts, categories and transactions.
@@ -62,36 +69,61 @@ export function isTransfer(transaction: Pick<TransactionRecord, "type">): boolea
 }
 
 /**
+ * Input contract for a manually tracked account.
+ *
+ * No banking credential is ever part of this contract: the dashboard tracks
+ * balances the owner types in (see AGENTS.md).
+ */
+export const accountInputSchema = z.object({
+  name: z.string().trim().min(1, "Le nom du compte est requis.").max(120),
+  type: z.enum(ACCOUNT_TYPES),
+  currency: currencyCode,
+});
+
+export type AccountInput = z.input<typeof accountInputSchema>;
+export type ValidatedAccountInput = z.output<typeof accountInputSchema>;
+
+export const categoryInputSchema = z.object({
+  name: z.string().trim().min(1, "Le nom de la catégorie est requis.").max(120),
+  kind: z.enum(CATEGORY_KINDS),
+});
+
+export type CategoryInput = z.input<typeof categoryInputSchema>;
+export type ValidatedCategoryInput = z.output<typeof categoryInputSchema>;
+
+/**
  * Input contract for a transaction, validated before it reaches the database.
  * Shared by the server actions and the spreadsheet view.
+ *
+ * The sign is part of the meaning: an outflow is negative. A positive amount on
+ * an EXPENSE transaction is a reimbursement, which is why the sign is asked for
+ * rather than derived from the type.
  */
 export const transactionInputSchema = z.object({
-  accountId: z.string().min(1, "Un compte est requis."),
-  categoryId: z.string().min(1).nullable().default(null),
+  accountId: z.string().trim().min(1, "Un compte est requis."),
+  categoryId: optionalId,
   type: z.enum(TRANSACTION_TYPES),
   label: z.string().trim().min(1, "Le libellé est requis.").max(200),
-  amount: z
-    .string()
-    .min(1, "Le montant est requis.")
-    .transform((value, ctx) => {
-      try {
-        return parseAmountInput(value);
-      } catch (error) {
-        ctx.addIssue({
-          code: "custom",
-          message: error instanceof Error ? error.message : "Montant invalide.",
-        });
-        return z.NEVER;
-      }
-    }),
-  currency: z.string().trim().length(3).transform(assertCurrency),
-  // A date-only string: `YYYY-MM-DD`, with no time zone attached.
-  operationDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date attendue au format AAAA-MM-JJ."),
-  notes: z.string().trim().max(2000).nullable().default(null),
+  amount,
+  currency: currencyCode,
+  operationDate: requiredDate,
+  notes: optionalText(2000, "Les notes sont limitées à 2000 caractères."),
 });
 
 export type TransactionInput = z.input<typeof transactionInputSchema>;
 export type ValidatedTransactionInput = z.output<typeof transactionInputSchema>;
+
+/**
+ * Form contract for a transaction.
+ *
+ * The currency is deliberately absent: a transaction is denominated in the
+ * currency of its account, so the server reads it from the account instead of
+ * asking for a second field that could contradict it.
+ */
+export const transactionFormSchema = transactionInputSchema.omit({ currency: true });
+
+export type TransactionFormValues = z.input<typeof transactionFormSchema>;
+export type ValidatedTransactionForm = z.output<typeof transactionFormSchema>;
 
 /**
  * A transaction amount must stay consistent with its type: an income is

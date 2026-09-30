@@ -17,6 +17,7 @@
     "db:studio": "prisma studio"
   },
   "dependencies": {
+    "@hookform/resolvers": "^5.9.1",
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
     "bcryptjs": "^3.0.3",
@@ -25,6 +26,7 @@
     "next-auth": "^5.0.0-beta.32",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "react-hook-form": "^7.89.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {

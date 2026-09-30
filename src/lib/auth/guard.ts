@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
+import { findOwnerById } from "@/modules/identity/repository";
 
 /**
  * Server-side authorisation.
@@ -7,6 +8,11 @@ import { auth } from "@/auth";
  * Hiding a link in the interface is not protection: every page, Route Handler
  * and Server Action that touches the budget, the properties or a private
  * repository calls one of these functions first.
+ *
+ * A signed token can outlive the row it names: recreating the database (new
+ * volume, reset, re-seed) issues new identifiers while browsers keep the previous
+ * cookie. Such a session is treated as signed out — one indexed lookup — instead
+ * of reaching pages that read nothing and writes that fail on a foreign key.
  */
 export type SessionUser = {
   id: string;
@@ -21,6 +27,11 @@ export async function getSessionUser(): Promise<SessionUser | null> {
   const email = session?.user?.email;
 
   if (!id || !email) {
+    return null;
+  }
+
+  // The token proves its signature, not that the owner still exists.
+  if (!(await findOwnerById(id))) {
     return null;
   }
 

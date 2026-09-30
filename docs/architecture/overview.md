@@ -41,6 +41,31 @@ real authorisation check is `requireUser()` (pages) or `requireApiUser()`
 answer `401` with a JSON body rather than redirecting, which is why API routes
 are excluded from the proxy matcher.
 
+### Write path
+
+Writes go through Server Actions, never through a Route Handler:
+
+```mermaid
+flowchart LR
+  F["Form (client)<br/>react-hook-form + zod"] -->|values| A["Server Action<br/>requireUser() first"]
+  A --> V["Module schema,<br/>re-validated"]
+  V --> O["Owner-scoped lookups<br/>findAccount / findProperty"]
+  O --> R[repository.ts]
+  R --> D[(PostgreSQL)]
+```
+
+- The form validates in the browser for comfort; the action validates again with
+  the same schema, because a request body can always be replayed by hand.
+- Every identifier sent by the browser (account, category, property, transaction)
+  is looked up with the owner's id: a foreign identifier is simply not found.
+- The action answers `ok`, `invalid` or `error`. `invalid` carries per-field
+  messages; `error` is generic and logs only the error type, never a payload.
+- A transaction takes its currency from its account, and a linked cashflow entry
+  takes it from its transaction. The browser never picks a currency that could
+  contradict the row it belongs to.
+- After a write, the action revalidates the affected paths (`/budget`,
+  `/real-estate`, `/dashboard`); nothing is cached across owners.
+
 ## Data conventions
 
 - **Amounts** are exact decimals (`numeric(18, 2)`), never floating point. The
@@ -75,7 +100,10 @@ what this section is for.
 
 - Single owner, credentials hashed with bcrypt, Auth.js session as a signed JWT.
 - Every private page, Route Handler and Server Action re-checks the session
-  server-side.
+  server-side. A valid signature is not enough: the owner row is looked up too, so a
+  session that outlives a recreated database is treated as signed out (redirect to
+  the login page) rather than letting the owner reach pages that read nothing and
+  writes that fail on a foreign key.
 - Provider tokens are encrypted at rest (AES-256-GCM, key from the environment)
   and never returned to the browser; only `hasStoredToken` is exposed.
 - Provider permissions are read-only; the adapters expose no write operation.
@@ -101,8 +129,9 @@ interface can show "synchronisation failed" instead of an empty dashboard.
 
 - No bank connector, no payment, no accounting or tax advice.
 - No writing to GitHub or GitLab.
-- The spreadsheet view cannot be edited inline yet; transactions are created
-  through the module API and the pages are read-only.
+- Transactions, accounts, categories, properties and cashflow entries can be
+  created from the pages, but existing rows cannot yet be edited inline or
+  deleted, and the budget view is a table rather than a spreadsheet grid.
 - No document/attachment storage.
 - The integrations page triggers a synchronisation on demand; no scheduler entry
   point (cron unit, platform job) ships with the repository yet.
