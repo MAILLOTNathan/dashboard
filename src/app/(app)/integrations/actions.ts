@@ -57,6 +57,9 @@ export async function syncConnectionAction(formData: FormData): Promise<void> {
 
   revalidatePath("/integrations");
 
+  const repository = formData.get("repository");
+  const focus = typeof repository === "string" && repository !== "" ? repository : null;
+
   if (result.status === "SYNCHRONISED") {
     const params = new URLSearchParams({
       sync: "ok",
@@ -64,6 +67,10 @@ export async function syncConnectionAction(formData: FormData): Promise<void> {
       issues: String(result.issueCount),
       tracking: result.issueTracking ? "on" : "off",
     });
+
+    if (focus) {
+      params.set("repo", focus);
+    }
 
     redirect(`/integrations?${params.toString()}`);
   }

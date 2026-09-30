@@ -16,6 +16,7 @@ import {
   isRecent,
   isUnanswered,
   sortIssuesByRecency,
+  summariseByRepository,
 } from "@/modules/integrations/issues";
 import type { IssueSummary } from "@/modules/integrations/repository";
 
@@ -35,17 +36,32 @@ export function IssuesCard({
   issues,
   issueTrackingConnected,
   lastSyncedAt,
+  selectedRepository,
 }: {
   issues: IssueSummary[];
   /** True when at least one connection fetches issues (GitHub today). */
   issueTrackingConnected: boolean;
   /** Last successful synchronisation of those connections, if any. */
   lastSyncedAt: Date | null;
+  /** Repository focused through `?repo=`, when it is still one of the followed ones. */
+  selectedRepository?: string;
 }) {
   const now = new Date();
-  const highlights = computeIssueHighlights(issues, { now });
-  const ordered = sortIssuesByRecency(issues);
-  const displayed = ordered.slice(0, DISPLAY_LIMIT);
+  const repositories = summariseByRepository(issues, { now });
+  const focused = repositories.find((entry) => entry.repository === selectedRepository);
+
+  // Focusing on one repository recomputes every indicator on that repository alone,
+  // so the figures always describe the rows displayed next to them. A whole repository
+  // is then shown, not the flat list's first page.
+  const visible = focused
+    ? sortIssuesByRecency(issues.filter((issue) => issue.repository === focused.repository))
+    : sortIssuesByRecency(issues);
+
+  const highlights = computeIssueHighlights(
+    focused ? visible : issues,
+    { now },
+  );
+  const displayed = focused ? visible : visible.slice(0, DISPLAY_LIMIT);
 
   return (
     <Card
@@ -71,6 +87,98 @@ export function IssuesCard({
         </Notice>
       ) : (
         <div className="flex flex-col gap-4">
+          <TableShell caption="Issues ouvertes par dépôt">
+            <thead>
+              <tr>
+                <th scope="col" className={thClass}>
+                  Dépôt
+                </th>
+                <th scope="col" className={`${thClass} text-right`}>
+                  Issues
+                </th>
+                <th scope="col" className={`${thClass} text-right`}>
+                  PR
+                </th>
+                <th scope="col" className={`${thClass} text-right`}>
+                  Nouvelles
+                </th>
+                <th scope="col" className={`${thClass} text-right`}>
+                  Sans réponse
+                </th>
+                <th scope="col" className={`${thClass} text-right`}>
+                  Plus ancienne
+                </th>
+                <th scope="col" className={thClass}>
+                  Vue
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {repositories.map((entry) => {
+                const isFocused = entry.repository === focused?.repository;
+
+                return (
+                  <tr
+                    key={entry.repository}
+                    className={isFocused ? "bg-zinc-50 dark:bg-zinc-800/60" : undefined}
+                  >
+                    <td className={tdClass}>
+                      <span className="font-medium">{entry.repository}</span>
+                      {isFocused ? (
+                        <span className="ml-2 inline-flex">
+                          <Badge tone="neutral">Sélectionné</Badge>
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className={`${tdClass} text-right tabular-nums`}>
+                      {entry.openIssues}
+                    </td>
+                    <td className={`${tdClass} text-right tabular-nums`}>
+                      {entry.pullRequests}
+                    </td>
+                    <td className={`${tdClass} text-right tabular-nums`}>{entry.recent}</td>
+                    <td className={`${tdClass} text-right tabular-nums`}>
+                      {entry.unanswered > 0 ? (
+                        <span className="font-semibold text-rose-700 dark:text-rose-400">
+                          {entry.unanswered}
+                        </span>
+                      ) : (
+                        0
+                      )}
+                    </td>
+                    <td className={`${tdClass} text-right tabular-nums`}>
+                      {entry.oldestAgeDays === null ? "—" : `${entry.oldestAgeDays} j`}
+                    </td>
+                    <td className={tdClass}>
+                      {isFocused ? (
+                        <Link href="/integrations" className="underline-offset-2 hover:underline">
+                          Tous les dépôts
+                        </Link>
+                      ) : (
+                        <Link
+                          href={`/integrations?repo=${encodeURIComponent(entry.repository)}`}
+                          className="underline-offset-2 hover:underline"
+                        >
+                          Voir ses issues
+                        </Link>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </TableShell>
+
+          <p className="text-sm font-medium">
+            {focused ? (
+              <>
+                {focused.repository} — {visible.length} issue(s) et pull request(s) ouverte(s)
+              </>
+            ) : (
+              <>Toutes les issues suivies ({issues.length})</>
+            )}
+          </p>
+
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <StatCard
               label={`Ouvertes depuis moins de ${highlights.recentDays} j`}
@@ -165,7 +273,8 @@ export function IssuesCard({
                         {issue.title}
                       </Link>
                       <span className="block text-xs text-zinc-500 dark:text-zinc-400">
-                        {issue.repository} #{issue.number} · {issue.connectionLabel}
+                        {focused ? "" : `${issue.repository} `}#{issue.number} ·{" "}
+                        {issue.connectionLabel}
                       </span>
                     </td>
                     <td className={tdClass}>
@@ -196,12 +305,16 @@ export function IssuesCard({
           </TableShell>
 
           <p className="text-xs text-zinc-500 dark:text-zinc-400">
-            {ordered.length > DISPLAY_LIMIT
-              ? `${DISPLAY_LIMIT} plus récentes sur ${ordered.length} suivies. `
+            {!focused && visible.length > DISPLAY_LIMIT
+              ? `${DISPLAY_LIMIT} plus récentes affichées sur ${visible.length} suivies. `
+              : ""}
+            {!focused
+              ? "Choisissez un dépôt ci-dessus pour voir toutes ses issues. "
               : ""}
             Une synchronisation interroge les dépôts les plus récemment modifiés, par ordre
             d&apos;activité décroissante, et s&apos;arrête là : un dépôt ancien n&apos;est pas lu.
-            Seules les issues encore ouvertes sont conservées.
+            Seules les issues encore ouvertes sont conservées. Un dépôt absent de ce tableau
+            n&apos;a soit aucune issue ouverte, soit n&apos;a pas été interrogé.
           </p>
         </div>
       )}

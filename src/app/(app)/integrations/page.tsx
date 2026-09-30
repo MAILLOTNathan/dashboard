@@ -71,6 +71,9 @@ export default async function IntegrationsPage({
   const issueTracking = typeof params.tracking === "string" ? params.tracking : undefined;
   const reason = typeof params.reason === "string" ? params.reason : undefined;
   const code = typeof params.code === "string" ? params.code : undefined;
+  // Repository focused in the issues card (`?repo=owner/name`). An unknown value
+  // simply shows every repository: no need to fail on a stale bookmark.
+  const selectedRepository = typeof params.repo === "string" ? params.repo : undefined;
 
   return (
     <>
@@ -181,6 +184,12 @@ export default async function IntegrationsPage({
                   <td className={tdClass}>
                     <form action={syncConnectionAction}>
                       <input type="hidden" name="connectionId" value={connection.id} />
+                      {/* A synchronisation must not lose the repository being read. */}
+                      <input
+                        type="hidden"
+                        name="repository"
+                        value={selectedRepository ?? ""}
+                      />
                       <button
                         type="submit"
                         className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
@@ -200,6 +209,7 @@ export default async function IntegrationsPage({
         issues={issues}
         issueTrackingConnected={issueConnections.length > 0}
         lastSyncedAt={lastIssueSync}
+        selectedRepository={selectedRepository}
       />
 
       <Card

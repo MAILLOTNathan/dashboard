@@ -143,3 +143,82 @@ export function sortIssuesByRecency<TIssue extends IssueLike>(
 ): TIssue[] {
   return [...issues].sort((left, right) => right.openedAt.getTime() - left.openedAt.getTime());
 }
+
+/** One line per repository: the view that never truncates. */
+export type RepositoryIssueSummary = {
+  repository: string;
+  openIssues: number;
+  pullRequests: number;
+  recent: number;
+  unanswered: number;
+  /** Age of the oldest **issue** still open in this repository, in whole days. */
+  oldestAgeDays: number | null;
+};
+
+/**
+ * Counts per repository.
+ *
+ * The flat list is truncated to stay readable, which can hide a whole repository;
+ * this summary cannot, so "the issues of each repository" is always answerable.
+ *
+ * Sorted by attention rather than alphabetically: repositories with unanswered
+ * issues first, then the ones with the most open issues, then by name so the order
+ * never moves for two repositories of equal weight.
+ */
+export function summariseByRepository<TIssue extends IssueLike & { repository: string }>(
+  issues: readonly TIssue[],
+  options: { now?: Date; recentDays?: number; unansweredDays?: number } = {},
+): RepositoryIssueSummary[] {
+  const now = options.now ?? new Date();
+  const recentDays = options.recentDays ?? DEFAULT_RECENT_DAYS;
+  const unansweredDays = options.unansweredDays ?? DEFAULT_UNANSWERED_DAYS;
+
+  const byRepository = new Map<string, RepositoryIssueSummary & { oldestOpenedAt: number | null }>();
+
+  for (const issue of issues) {
+    const summary = byRepository.get(issue.repository) ?? {
+      repository: issue.repository,
+      openIssues: 0,
+      pullRequests: 0,
+      recent: 0,
+      unanswered: 0,
+      oldestAgeDays: null,
+      oldestOpenedAt: null,
+    };
+
+    if (isQuestion(issue)) {
+      summary.openIssues += 1;
+
+      if (summary.oldestOpenedAt === null || issue.openedAt.getTime() < summary.oldestOpenedAt) {
+        summary.oldestOpenedAt = issue.openedAt.getTime();
+      }
+    } else {
+      summary.pullRequests += 1;
+    }
+
+    if (isRecent(issue, now, recentDays)) {
+      summary.recent += 1;
+    }
+
+    if (isUnanswered(issue, now, unansweredDays)) {
+      summary.unanswered += 1;
+    }
+
+    byRepository.set(issue.repository, summary);
+  }
+
+  return [...byRepository.values()]
+    .map(({ oldestOpenedAt, ...summary }) => ({
+      ...summary,
+      oldestAgeDays:
+        oldestOpenedAt === null
+          ? null
+          : ageInDays(new Date(oldestOpenedAt), now),
+    }))
+    .sort(
+      (left, right) =>
+        right.unanswered - left.unanswered ||
+        right.openIssues - left.openIssues ||
+        left.repository.localeCompare(right.repository),
+    );
+}

@@ -21,7 +21,7 @@ Working today:
   page, occupancy status, totals, due dates.
 - GitHub / GitLab connections: read-only adapters, encrypted tokens, manual
   synchronisation, project snapshots, plus the open GitHub issues and pull requests
-  with the new, unanswered and long-standing ones flagged.
+  counted per repository, with the new, unanswered and long-standing ones flagged.
 - Dashboard with indicators derived from real data, distinguishing "no data",
   "not connected" and "synchronisation failed".
 

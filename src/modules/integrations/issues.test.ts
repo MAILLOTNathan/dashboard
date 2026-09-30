@@ -6,6 +6,7 @@ import {
   isStale,
   isUnanswered,
   sortIssuesByRecency,
+  summariseByRepository,
   type IssueLike,
 } from "./issues";
 
@@ -182,5 +183,95 @@ describe("sortIssuesByRecency", () => {
 
     expect(sorted.map((entry) => entry.id)).toEqual(["newest", "middle", "oldest"]);
     expect(input.map((entry) => entry.id)).toEqual(["middle", "oldest", "newest"]);
+  });
+});
+
+describe("summariseByRepository", () => {
+  function stored(
+    repository: string,
+    overrides: Partial<IssueLike> & { id?: string } = {},
+  ): IssueLike & { repository: string; id: string } {
+    return { ...issue(overrides), repository };
+  }
+
+  it("returns nothing for an empty list", () => {
+    expect(summariseByRepository([], { now: NOW })).toEqual([]);
+  });
+
+  it("counts issues, pull requests, new and unanswered entries per repository", () => {
+    const summary = summariseByRepository(
+      [
+        stored("example-org/api", { id: "a1", openedAt: daysAgo(1) }),
+        stored("example-org/api", { id: "a2", openedAt: daysAgo(10) }),
+        stored("example-org/api", {
+          id: "a3",
+          kind: "PULL_REQUEST",
+          openedAt: daysAgo(2),
+        }),
+        stored("example-org/site", { id: "s1", openedAt: daysAgo(200) }),
+      ],
+      { now: NOW },
+    );
+
+    expect(summary).toHaveLength(2);
+    const api = summary.find((entry) => entry.repository === "example-org/api");
+    expect(api).toMatchObject({
+      openIssues: 2,
+      pullRequests: 1,
+      recent: 3,
+      unanswered: 1, // a2 only: the pull request never counts as unanswered
+      oldestAgeDays: 10,
+    });
+
+    const site = summary.find((entry) => entry.repository === "example-org/site");
+    expect(site).toMatchObject({
+      openIssues: 1,
+      pullRequests: 0,
+      recent: 0,
+      unanswered: 1,
+      oldestAgeDays: 200,
+    });
+  });
+
+  it("puts the repositories that need attention first, then the busiest, then by name", () => {
+    const summary = summariseByRepository(
+      [
+        // Quiet repository, nothing unanswered.
+        stored("example-org/quiet", { id: "q1", openedAt: daysAgo(1) }),
+        // Busy but answered.
+        stored("example-org/busy", { id: "b1", openedAt: daysAgo(1), commentsCount: 3 }),
+        stored("example-org/busy", { id: "b2", openedAt: daysAgo(2), commentsCount: 1 }),
+        // One unanswered issue: first despite being the smallest.
+        stored("example-org/ignored", { id: "i1", openedAt: daysAgo(6) }),
+      ],
+      { now: NOW },
+    );
+
+    expect(summary.map((entry) => entry.repository)).toEqual([
+      "example-org/ignored",
+      "example-org/busy",
+      "example-org/quiet",
+    ]);
+  });
+
+  it("ignores pull requests when reporting the oldest open issue", () => {
+    const summary = summariseByRepository(
+      [
+        stored("example-org/api", { id: "p1", kind: "PULL_REQUEST", openedAt: daysAgo(300) }),
+        stored("example-org/api", { id: "p2", openedAt: daysAgo(5) }),
+      ],
+      { now: NOW },
+    );
+
+    expect(summary[0].oldestAgeDays).toBe(5);
+  });
+
+  it("reports no age at all for a repository with only pull requests", () => {
+    const summary = summariseByRepository(
+      [stored("example-org/api", { id: "p1", kind: "PULL_REQUEST", openedAt: daysAgo(4) })],
+      { now: NOW },
+    );
+
+    expect(summary[0]).toMatchObject({ openIssues: 0, pullRequests: 1, oldestAgeDays: null });
   });
 });

@@ -110,6 +110,11 @@ flowchart LR
   - `oldestOpen` — the oldest open issue, with its age in whole days.
   A closed issue leaves the list at the next synchronisation, which is what keeps
   it a to-do list rather than an archive.
+- Issues per repository — `summariseByRepository` counts each repository's open
+  issues, pull requests, new entries and unanswered entries, and is never truncated:
+  the flat list is capped for readability, a repository is not. Focusing one
+  repository (`?repo=owner/name`) recomputes every indicator on that repository
+  alone, so the figures always describe the rows displayed beside them.
 
 An indicator is only displayed once its definition is written down, which is
 what this section is for.
