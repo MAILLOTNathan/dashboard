@@ -69,9 +69,10 @@ npm run db:seed          # creates the owner from SEED_OWNER_* variables
 npm run dev              # http://localhost:3000
 ```
 
-Ports 3000 and 5432 may already be used by another local project. Use
-`PORT=3100 npm run dev`, and set `POSTGRES_PORT` in `.env` (keeping
-`DATABASE_URL` consistent) when 5432 is taken.
+Ports 8888 (proxy), 3000 (application) and 5432 may already be used by another local
+project. Use `PORT=3100 npm run dev`, set `PROXY_PORT` for the proxy (see
+[The proxy and the address you browse](#the-proxy-and-the-address-you-browse)), and set
+`POSTGRES_PORT` in `.env` (keeping `DATABASE_URL` consistent) when 5432 is taken.
 
 ### Full stack in containers
 
@@ -122,58 +123,73 @@ overwrites an existing hash — see the note above. A forgotten password is repl
 from the server, with `SEED_OWNER_FORCE_PASSWORD=true`; there is no self-service
 recovery, on purpose.
 
-### A hostname instead of a port
+### The proxy and the address you browse
 
-The stack can also be served through a small reverse proxy, so the URL is
-`http://dashboard.localhost` rather than `http://localhost:3000`:
+The `full` stack puts a small reverse proxy in front of the application: it is the
+front door, and the address to type is `http://dashboard.localhost:8888`:
 
 ```sh
-# AUTH_URL and APP_HOST are already set to that name in .env
+# AUTH_URL, APP_HOST and PROXY_PORT already describe that origin in .env
 docker compose --profile full up -d --build
 ```
 
-With `APP_HOST=http://dashboard.localhost` and `AUTH_URL=http://dashboard.localhost`,
-the proxy and the application agree on one origin.
+Three variables describe that single origin, and they are not independent. A mismatch
+is invisible in `docker compose ps`: it only shows up in the browser.
 
-No hosts entry is needed for that name: `.localhost` is reserved for loopback, so
-current browsers and `curl` resolve it to this machine. To use another name, create the
-entry and change it in both places — it is the same origin in two roles:
+- `PROXY_PORT` is the port published on the host, 8888 by default.
+- `APP_HOST` is the site address the proxy answers for. It carries the same port,
+  because Caddy listens on the port of its site address.
+- `AUTH_URL` is the origin the application is told to use for absolute URLs, the
+  sign-in callback in particular.
+
+The application's own port (3000) stays published on loopback for debugging: it serves
+the same process, but not the origin Auth.js was told about. It is also a different
+host (`localhost`, not `dashboard.localhost`), so it is a separate session: useful for
+`curl`, not for signing in.
+
+`APP_HOST` also decides the scheme. `http://dashboard.localhost:8888` serves plain
+HTTP, which is what you want locally: there is no certificate to install. A bare
+hostname (`APP_HOST=dashboard.example.com`) makes the same file serve HTTPS with an
+automatically obtained certificate, which is what you want on a server — set
+`PROXY_PORT=80` (or `443`) there, so the URL needs no port.
+
+The default needs no hosts entry: `.localhost` and its subdomains are reserved for
+loopback (RFC 6761), and current browsers and `curl` resolve them to this machine on
+their own. Any other name does need one:
 
 ```sh
 echo "127.0.0.1 budget.etib.test" | sudo tee -a /etc/hosts
-# then set APP_HOST=http://budget.etib.test and AUTH_URL=http://budget.etib.test
+# then set APP_HOST=http://budget.etib.test:8888 and AUTH_URL=http://budget.etib.test:8888
 ```
 
 Two failure modes are worth recognising, because neither looks like an error:
 
 - A name the proxy was not configured for gets an **empty page**, not a 404. A blank
-  tab normally means the address you typed and `APP_HOST` differ.
+  tab normally means the address you typed and `APP_HOST` differ: typing
+  `localhost:8888` against an `APP_HOST` of `dashboard.localhost:8888` is exactly this,
+  because the two are different hosts, not two spellings of one.
 - A mismatched `AUTH_URL` signs you in on a different origin than the one you typed,
   because the session cookie belongs to a single host.
 
-`APP_HOST` decides the scheme. `http://dashboard.localhost` serves plain HTTP, which is
-what you want locally: there is no certificate to install. A bare hostname
-(`APP_HOST=dashboard.example.com`) makes the same file serve HTTPS with an
-automatically obtained certificate, which is what you want on a server.
-
-Two reasons to prefer this over `localhost:3000`:
+Three reasons to go through the proxy rather than publishing the application directly:
 
 - **Auth.js needs to be told its public origin.** The standalone server otherwise
   derives absolute URLs from its own container identity and internal port
   (`http://<container-id>:3000`), which no browser can reach: the sign-in callback
   would point there. `AUTH_URL` is what makes that origin explicit.
-- **Cookies are per host**, so a session opened on `dashboard.localhost` is not the
-  same as one on `localhost:3000`. Pick one origin and stay on it: `AUTH_URL` and the
-  address you type must match, or you will be signed out on one of them. Cookies ignore
-  the port, so `dashboard.localhost` and `dashboard.localhost:3000` do share a session.
-
-The proxy also keeps `Host` and `Origin` aligned, which is what the Server Actions
-check before accepting a form submission.
+- **Cookies are per host**, so a session opened on one host is not shared with another.
+  Pick one origin and stay on it: `AUTH_URL` and the address you type must match, or you
+  will be signed in on one and unknown on the other. Cookies ignore the port, so
+  `dashboard.localhost` and `dashboard.localhost:8888` would share a session: changing
+  the port alone never signs you out, changing the host does.
+- The proxy also keeps `Host` and `Origin` aligned, which is what the Server Actions
+  check before accepting a form submission.
 
 Why these names: `.localhost` (RFC 6761) and `.test` (RFC 2606) are both reserved and
 can never resolve publicly — unlike `.local`, which is mDNS territory, or an invented
 name that could exist one day. `.localhost` has the advantage of needing no
-configuration at all, which is why the stack defaults to it.
+configuration at all, which is why it is the name documented for the hostname
+alternative.
 
 The proxy belongs to the `full` profile, so it starts and stops with the application:
 
@@ -183,12 +199,12 @@ docker compose --profile full ps
 docker compose --profile full down
 ```
 
-It used to live in a profile of its own, which meant a forgotten flag left the hostname
-refusing connections while `app` and `db` looked healthy — the proxy depends on `app`, so
-the two belong together. `docker compose up -d` with no profile still starts PostgreSQL
-only.
+It used to live in a profile of its own, which meant a forgotten flag left the front
+door refusing connections while `app` and `db` looked healthy — the proxy depends on
+`app`, so the two belong together. `docker compose up -d` with no profile still starts
+PostgreSQL only.
 
-Publishing port 80 is now part of the full stack. Set `PROXY_PORT` if something else
+Publishing 8888 is now part of the full stack. Set `PROXY_PORT` if something else
 already holds it.
 
 ## Scripts

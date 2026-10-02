@@ -118,6 +118,25 @@ export function computeTotalsByCurrency(
   );
 }
 
+export function computeCumulativeTotal(
+  transactions: readonly TransactionRecord[],
+  options: { currency?: Currency } = {},
+): Decimal {
+  const currency = options.currency ?? transactions[0]?.currency ?? "EUR";
+
+  let cumulativeTotal = new Decimal(0);
+  for (const transaction of transactions) {
+    if (transaction.currency !== currency) {
+      throw new Error(
+        `Cannot aggregate ${transaction.currency} and ${currency} in a single total: group transactions by currency first.`,
+      );
+    }
+    cumulativeTotal = cumulativeTotal.plus(transaction.amount);
+  }
+
+  return cumulativeTotal;
+}
+
 /**
  * Groups transactions by their currency.
  *

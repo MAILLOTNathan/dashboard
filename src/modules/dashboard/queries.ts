@@ -1,3 +1,4 @@
+import { Decimal } from "@/generated/prisma/internal/prismaNamespace";
 import {
   currentMonthKey,
   formatMonthLabel,
@@ -5,7 +6,7 @@ import {
   parseMonthKey,
 } from "@/lib/dates";
 import { countTransactions, listAccounts, listTransactions } from "@/modules/budget/repository";
-import { computeTotalsByCurrency, type MonthlyTotals } from "@/modules/budget/totals";
+import { computeCumulativeTotal, computeTotalsByCurrency, type MonthlyTotals } from "@/modules/budget/totals";
 import {
   describeConnectionState,
   type ConnectionState,
@@ -30,6 +31,7 @@ export type DashboardBudgetSummary = {
   transactionCount: number;
   monthTransactionCount: number;
   monthTotals: MonthlyTotals[];
+  totalCumulative: Decimal;
 };
 
 export type DashboardIntegrationSummary = {
@@ -63,6 +65,8 @@ export async function getDashboardOverview(
       listAccounts(userId),
     ]);
 
+  const allTransactions = await listTransactions(userId);
+
   return {
     monthKey,
     monthLabel: formatMonthLabel(year, month),
@@ -71,6 +75,7 @@ export async function getDashboardOverview(
       transactionCount,
       monthTransactionCount: monthTransactions.length,
       monthTotals: computeTotalsByCurrency(monthTransactions),
+      totalCumulative: computeCumulativeTotal(allTransactions, { currency: "EUR" }),
     },
     realEstate: { propertyCount },
     integrations: connections.map((connection) => ({

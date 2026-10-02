@@ -2,7 +2,8 @@
 #
 # Default (`docker compose up -d`) starts PostgreSQL only, bound to 127.0.0.1.
 # The full stack (`docker compose --profile full up -d --build`) also runs the app and
-# a small reverse proxy that serves it on APP_HOST instead of a port (see README).
+# a small reverse proxy that serves it on APP_HOST, the front door (`localhost:8888` by
+# default; see README).
 #
 # PostgreSQL is never published on the public interface: in production only the
 # application container reaches it over the internal network.
@@ -52,13 +53,15 @@ services:
       # be inferred here: the standalone server would fall back to its own container
       # name and internal port (http://<container-id>:3000), which no browser can
       # reach. Keep it identical to the origin you actually browse, and to APP_HOST
-      # when the proxy profile is enabled: cookies are per host, so a mismatch means
-      # signing in on one origin and being unknown on the other.
-      AUTH_URL: ${AUTH_URL:-http://localhost:3000}
+      # below: cookies are per host, so a mismatch means signing in on one origin and
+      # being unknown on the other.
+      AUTH_URL: ${AUTH_URL:-http://dashboard.localhost:8888}
       INTEGRATION_ENCRYPTION_KEY: ${INTEGRATION_ENCRYPTION_KEY:?INTEGRATION_ENCRYPTION_KEY is required}
       NEXT_PUBLIC_DEFAULT_CURRENCY: ${NEXT_PUBLIC_DEFAULT_CURRENCY:-EUR}
       NEXT_PUBLIC_DEFAULT_TIME_ZONE: ${NEXT_PUBLIC_DEFAULT_TIME_ZONE:-Europe/Paris}
-    # The port is meant to stay behind an HTTPS reverse proxy.
+    # The application port itself, published on loopback for debugging only: the
+    # address to browse is the proxy one (localhost:8888, see the `proxy` service).
+    # The comment above still applies in production, where only the proxy is exposed.
     ports:
       - "127.0.0.1:3000:3000"
 
@@ -75,12 +78,16 @@ services:
       app:
         condition: service_started
     environment:
-      # Includes the scheme on purpose: `http://` for a local name served over plain
-      # HTTP, a bare hostname for a real one Caddy would get a certificate for.
-      # `.localhost` is reserved for loopback, so the default needs no hosts entry.
-      APP_HOST: ${APP_HOST:-http://dashboard.localhost}
+      # The site address the proxy answers for, and the one to type in the browser.
+      # It carries the port on purpose: Caddy listens on the port of its site
+      # address, so it has to match the published port just below. The scheme matters
+      # too: `http://` serves plain HTTP (what you want locally, nothing to trust),
+      # while a bare hostname on a server serves HTTPS with an obtained certificate.
+      # `dashboard.localhost` needs no hosts entry: `.localhost` and its subdomains
+      # are reserved for loopback (RFC 6761) and resolve to this machine on their own.
+      APP_HOST: ${APP_HOST:-http://dashboard.localhost:8888}
     ports:
-      - "${PROXY_PORT:-80}:80"
+      - "${PROXY_PORT:-8888}:8888"
     volumes:
       - ./infra/proxy/Caddyfile:/etc/caddy/Caddyfile:ro
       # Certificates and account data: only used when APP_HOST has no scheme, but a
