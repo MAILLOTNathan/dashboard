@@ -63,7 +63,7 @@ services:
     # address to browse is the proxy one (localhost:8888, see the `proxy` service).
     # The comment above still applies in production, where only the proxy is exposed.
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3000:8888"
 
   # Serves the application on a hostname instead of a port: the same shape as
   # production, where a reverse proxy terminates HTTPS in front of the Next.js server.
@@ -85,9 +85,11 @@ services:
       # while a bare hostname on a server serves HTTPS with an obtained certificate.
       # `dashboard.localhost` needs no hosts entry: `.localhost` and its subdomains
       # are reserved for loopback (RFC 6761) and resolve to this machine on their own.
-      APP_HOST: ${APP_HOST:-http://dashboard.localhost:8888}
+      APP_HOST: ${APP_HOST:-http://dashboard.localhost}
     ports:
-      - "${PROXY_PORT:-8888}:8888"
+      # The proxy port, which is the one to browse. It is published on all interfaces
+      # so a remote machine can reach it, but only if the firewall allows it.
+      - "${APP_PORT:-8888}:8888"
     volumes:
       - ./infra/proxy/Caddyfile:/etc/caddy/Caddyfile:ro
       # Certificates and account data: only used when APP_HOST has no scheme, but a
