@@ -112,11 +112,12 @@ services:
     environment:
       DATABASE_URL: *database-url
 
-  # One-shot owner bootstrap: creates or updates the single owner account from
-  # SEED_OWNER_*, then exits. It runs on every `up` and is idempotent, so `.env`
-  # is the source of truth for the owner password: change SEED_OWNER_PASSWORD and
-  # run `up -d` again to rotate it. There is no public sign-up, so the app waits
-  # for this service: without an account there is nothing to log in with.
+  # One-shot owner bootstrap: creates the single owner account from SEED_OWNER_*,
+  # or refreshes its name, then exits. It runs on every `up` and is idempotent. The
+  # environment password is written when the account is created; a password changed
+  # from the Compte page is kept, unless SEED_OWNER_FORCE_PASSWORD=true, which is
+  # also the way back from a forgotten password. There is no public sign-up, so the
+  # app waits for this service: without an account there is nothing to log in with.
   # The seed also needs AUTH_SECRET and INTEGRATION_ENCRYPTION_KEY because it
   # imports @/lib/db, which validates the whole server environment.
   seed:

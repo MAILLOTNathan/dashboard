@@ -207,6 +207,29 @@ PostgreSQL only.
 Publishing 8888 is now part of the full stack. Set `PROXY_PORT` if something else
 already holds it.
 
+## Environment variables
+
+`.env.example` lists every variable with a comment; copy it to `.env` and replace
+the fictitious values. The ones that matter most:
+
+| Variable | Role |
+| --- | --- |
+| `DATABASE_URL` | PostgreSQL connection string. Server only. |
+| `AUTH_SECRET` | Signs the session JWT; 32 characters minimum (`openssl rand -base64 32`). |
+| `INTEGRATION_ENCRYPTION_KEY` | AES-256-GCM key protecting provider tokens at rest: 32 bytes, base64 encoded. |
+| `AUTH_URL` | The public origin, needed behind the proxy. It must equal the address you browse — see [The proxy and the address you browse](#the-proxy-and-the-address-you-browse). |
+| `AUTH_TRUST_HOST` | Auth.js host trust; the compose stack sets `true`. |
+| `SEED_OWNER_EMAIL`, `SEED_OWNER_PASSWORD`, `SEED_OWNER_NAME` | Create the single owner account. There is no public sign-up. |
+| `SEED_OWNER_FORCE_PASSWORD` | `true` overwrites the stored hash with `SEED_OWNER_PASSWORD`; left unset, a password changed from the Compte page is kept. |
+| `NEXT_PUBLIC_DEFAULT_CURRENCY`, `NEXT_PUBLIC_DEFAULT_TIME_ZONE` | Interface defaults (`EUR`, `Europe/Paris`); the only variables shipped to the browser. |
+| `APP_HOST`, `PROXY_PORT` | Address and host port served by the proxy (`full` profile). |
+| `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT` | Credentials and host port of the local PostgreSQL container. |
+
+The server-only variables are validated by `src/lib/env.ts` on first use: a missing
+secret fails loudly with the variable names instead of surfacing later as an obscure
+error. `NEXT_PUBLIC_*` values are inlined into the client bundle at build time, so a
+secret must never be added to that block.
+
 ## Scripts
 
 | Command | Purpose |
@@ -216,10 +239,11 @@ already holds it.
 | `npm run lint` | ESLint |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run test` | Unit tests (Vitest) |
-| `npm run db:generate` | Generate the Prisma client into `src/generated/prisma` |
+| `npm run test:watch` | Unit tests in watch mode |
+| `npm run db:generate` | Generate the Prisma client into `src/generated/prisma` (required before typecheck, tests or build) |
 | `npm run db:migrate` | Create and apply a migration (development) |
 | `npm run db:deploy` | Apply pending migrations (deployment) |
-| `npm run db:seed` | Create or update the owner account |
+| `npm run db:seed` | Create the owner account, or refresh its name (the stored password is kept) |
 | `npm run db:studio` | Browse the database |
 
 ## Project structure
@@ -268,6 +292,21 @@ A run is idempotent: replaying it updates snapshots instead of duplicating them.
 Nothing is written when a run fails halfway, and the previous successful
 synchronisation is kept for display.
 
+## Tests and CI
+
+`npm run test` runs the unit tests once (Vitest); `npm run test:watch` keeps them
+running. No test connects to a database or performs a real network call: business
+rules are called directly, provider adapters receive an injected fake `fetch`, and
+the action-level tests mock their modules. They cover what is expensive to get
+wrong: money and date handling, monthly totals (transfers counted by sign, refunds,
+currencies), CSV escaping and formula neutralisation, the password policy and the
+session guard, provider failure cases, issue filters and milestones.
+
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request:
+install, generate the Prisma client, lint, type check, unit tests, apply the
+migrations on a fresh PostgreSQL service container, then build. The secrets it uses
+are fictitious values that only let the build run.
+
 ## Before production
 
 - Configure HTTPS through a reverse proxy; keep PostgreSQL off the public
@@ -278,5 +317,11 @@ synchronisation is kept for display.
 - Apply migrations and create the owner before the application starts: the
   `migrate` and `seed` services do both, or run them alone with
   `docker compose --profile full run --rm migrate` / `run --rm seed`.
-- `SEED_OWNER_PASSWORD` is authoritative: the seed rewrites the stored hash on
-  every `up`. Keep it out of the image and rotate it by editing `.env`.
+- `SEED_OWNER_PASSWORD` is written when the seed creates the account, or when
+  `SEED_OWNER_FORCE_PASSWORD=true`: a password changed from the Compte page survives
+  a restart or a redeploy. Keep the value out of the image; rotate it by editing
+  `.env` and forcing one seed run.
+
+## License
+
+Released into the public domain — see `LICENSE`.
