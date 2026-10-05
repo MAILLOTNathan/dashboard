@@ -60,6 +60,16 @@ enum IntegrationStatus {
   ERROR
 }
 
+/// The lifecycle of one synchronisation attempt. `PARTIAL` means the run completed
+/// but some repositories were left unread (the run bound, or a provider refusal):
+/// their data is unknown, not empty.
+enum SyncRunStatus {
+  RUNNING
+  SUCCESS
+  PARTIAL
+  FAILED
+}
+
 /// An open issue and an open pull request arrive from the same provider endpoint;
 /// they stay distinct because they call for different actions.
 enum IssueKind {
@@ -217,6 +227,7 @@ model IntegrationConnection {
   snapshots ProjectSnapshot[]
   issues    IssueSnapshot[]
   milestones MilestoneSnapshot[]
+  syncRuns  SyncRun[]
 
   @@unique([userId, provider, instanceUrl])
   @@index([userId])
@@ -318,4 +329,39 @@ model MilestoneSnapshot {
 
   @@unique([connectionId, externalId])
   @@index([connectionId, state, dueOn])
+}
+
+/// One synchronisation attempt, kept so freshness and failures stay observable.
+///
+/// A run is opened before the first provider request and closed in every outcome —
+/// success, partial completion or failure — so it can never end up as a `RUNNING`
+/// row without a process. Counters describe what the run actually did:
+/// - `fetched` counts provider items read (projects, issues and pull requests,
+///   milestones);
+/// - `created` and `updated` count snapshot rows first seen versus refreshed;
+/// - `skipped` and `failed` count repositories, the unit the run bound and provider
+///   refusals operate on. Both mean "not read": their data is unknown, never zero.
+///
+/// Only a safe summary is stored, never a token, a response body or a provider URL
+/// carrying credentials. Retention is documented in `docs/architecture/overview.md`
+/// and applied by `npm run db:cleanup`.
+model SyncRun {
+  id           String        @id @default(cuid())
+  connectionId String
+  status       SyncRunStatus @default(RUNNING)
+  startedAt    DateTime      @default(now()) @db.Timestamptz(3)
+  finishedAt   DateTime?     @db.Timestamptz(3)
+  fetched      Int           @default(0)
+  created      Int           @default(0)
+  updated      Int           @default(0)
+  skipped      Int           @default(0)
+  failed       Int           @default(0)
+  /// Bounded retries used by this run (transient failures only).
+  retries      Int           @default(0)
+  /// Safe error code for a failed run, for example "RATE_LIMITED (HTTP 403)".
+  errorSummary String?
+
+  connection IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([connectionId, startedAt])
 }

@@ -3,7 +3,11 @@ import {
   connectionInputSchema,
   describeConnectionState,
   describeInstance,
+  describeSyncRun,
+  formatRunDuration,
+  isSyncStale,
   publicInstanceLabel,
+  STALE_AFTER_HOURS,
 } from "./domain";
 
 describe("describeConnectionState", () => {
@@ -128,5 +132,126 @@ describe("connectionInputSchema", () => {
     });
 
     expect(result.success).toBe(false);
+  });
+});
+
+describe("isSyncStale", () => {
+  const lastSyncedAt = new Date(Date.UTC(2026, 9, 5, 12, 0, 0));
+
+  it("accepts a fresh synchronisation", () => {
+    const now = new Date(lastSyncedAt.getTime() + 3 * 3_600_000);
+    expect(isSyncStale(lastSyncedAt, now)).toBe(false);
+  });
+
+  it("treats exactly the threshold as still fresh: staleness starts after it", () => {
+    const now = new Date(lastSyncedAt.getTime() + STALE_AFTER_HOURS * 3_600_000);
+    expect(isSyncStale(lastSyncedAt, now)).toBe(false);
+  });
+
+  it("reports a synchronisation older than the threshold as stale", () => {
+    const now = new Date(
+      lastSyncedAt.getTime() + STALE_AFTER_HOURS * 3_600_000 + 1,
+    );
+    expect(isSyncStale(lastSyncedAt, now)).toBe(true);
+  });
+
+  it("honours a custom threshold", () => {
+    const now = new Date(lastSyncedAt.getTime() + 48 * 3_600_000);
+    expect(isSyncStale(lastSyncedAt, now, 24)).toBe(true);
+    expect(isSyncStale(lastSyncedAt, now, 72)).toBe(false);
+  });
+});
+
+describe("describeSyncRun", () => {
+  const baseRun = {
+    status: "SUCCESS" as const,
+    startedAt: new Date(Date.UTC(2026, 9, 5, 12, 0, 0)),
+    fetched: 12,
+    skipped: 0,
+    failed: 0,
+    retries: 0,
+    errorSummary: null,
+  };
+
+  it("labels a full success as successful", () => {
+    expect(describeSyncRun(baseRun)).toEqual({
+      label: "Réussie",
+      note: null,
+      tone: "positive",
+    });
+  });
+
+  it("does not present an empty success as a quiet victory", () => {
+    expect(describeSyncRun({ ...baseRun, fetched: 0 })).toEqual({
+      label: "Réussie — rien à lire",
+      note: null,
+      tone: "neutral",
+    });
+  });
+
+  it("names the repositories left unread on a partial run", () => {
+    expect(describeSyncRun({ ...baseRun, status: "PARTIAL", skipped: 3 })).toEqual({
+      label: "Partielle",
+      note: "3 dépôt(s) non lu(s) — leurs données restent inconnues",
+      tone: "warning",
+    });
+  });
+
+  it("reports failed repositories and retries", () => {
+    const outcome = describeSyncRun({
+      ...baseRun,
+      status: "PARTIAL",
+      failed: 1,
+      retries: 2,
+    });
+
+    expect(outcome.label).toBe("Partielle");
+    expect(outcome.note).toContain("1 dépôt(s) en échec");
+    expect(outcome.note).toContain("2 relance(s) après erreur transitoire");
+  });
+
+  it("keeps only the safe error summary on a failed run", () => {
+    const outcome = describeSyncRun({
+      ...baseRun,
+      status: "FAILED",
+      fetched: 0,
+      errorSummary: "RATE_LIMITED (HTTP 403)",
+      retries: 1,
+    });
+
+    expect(outcome.label).toBe("Échec");
+    expect(outcome.tone).toBe("negative");
+    expect(outcome.note).toBe(
+      "RATE_LIMITED (HTTP 403) · 1 relance(s) après erreur transitoire",
+    );
+  });
+
+  it("reads a RUNNING row left behind as interrupted, not in progress", () => {
+    const now = new Date(baseRun.startedAt.getTime() + 2 * 3_600_000);
+
+    expect(describeSyncRun({ ...baseRun, status: "RUNNING" }, { now })).toEqual({
+      label: "Interrompue",
+      note: "Le processus s'est arrêté avant la fin de la synchronisation.",
+      tone: "warning",
+    });
+  });
+});
+
+describe("formatRunDuration", () => {
+  const start = new Date(Date.UTC(2026, 9, 5, 12, 0, 0));
+
+  it("formats seconds, minutes and hours", () => {
+    expect(formatRunDuration(start, new Date(start.getTime() + 4_000))).toBe("4 s");
+    expect(formatRunDuration(start, new Date(start.getTime() + 65_000))).toBe(
+      "1 min 05 s",
+    );
+    expect(formatRunDuration(start, new Date(start.getTime() + 3_600_000))).toBe("1 h");
+    expect(formatRunDuration(start, new Date(start.getTime() + 3_900_000))).toBe(
+      "1 h 05",
+    );
+  });
+
+  it("does not invent a duration for an unfinished run", () => {
+    expect(formatRunDuration(start, null)).toBe("en cours");
   });
 });

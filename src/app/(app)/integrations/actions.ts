@@ -61,12 +61,9 @@ export async function syncConnectionAction(formData: FormData): Promise<void> {
   const focus = typeof repository === "string" && repository !== "" ? repository : null;
 
   if (result.status === "SYNCHRONISED") {
-    const params = new URLSearchParams({
-      sync: "ok",
-      projects: String(result.projectCount),
-      issues: String(result.issueCount),
-      tracking: result.issueTracking ? "on" : "off",
-    });
+    // The stored run carries the counters; the page reads them from the database, so
+    // the summary survives a refresh and the URL stays free of duplicated figures.
+    const params = new URLSearchParams({ sync: "ok" });
 
     if (focus) {
       params.set("repo", focus);

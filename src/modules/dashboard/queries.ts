@@ -9,6 +9,7 @@ import { countTransactions, listAccounts, listTransactions } from "@/modules/bud
 import { computeCumulativeTotal, computeTotalsByCurrency, type MonthlyTotals } from "@/modules/budget/totals";
 import {
   describeConnectionState,
+  isSyncStale,
   type ConnectionState,
   type ConnectionSummary,
 } from "@/modules/integrations/domain";
@@ -37,6 +38,8 @@ export type DashboardBudgetSummary = {
 export type DashboardIntegrationSummary = {
   connection: ConnectionSummary;
   state: ConnectionState;
+  /** True when the last successful synchronisation is older than the displayed threshold. */
+  stale: boolean;
 };
 
 export type DashboardOverview = {
@@ -86,6 +89,8 @@ export async function getDashboardOverview(
         lastSyncError: connection.lastSyncError,
         projectCount: connection.projectCount,
       }),
+      stale:
+        connection.lastSyncedAt !== null && isSyncStale(connection.lastSyncedAt, now),
     })),
   };
 }

@@ -201,6 +201,32 @@ function for convenience.
 A failure keeps the previous `lastSyncedAt` and stores a safe error code, so the
 interface can show "synchronisation failed" instead of an empty dashboard.
 
+### Run history, freshness and retention
+
+Every attempt that starts is recorded as a `SyncRun` row and closed in every outcome:
+`SUCCESS`, `PARTIAL` (some repositories were left unread — by the run bound or a
+provider refusal) or `FAILED`. `fetched`, `created` and `updated` count provider items
+and snapshot rows; `skipped` and `failed` count repositories, the unit the run bound
+and provider refusals operate on. Only safe error codes are stored, never a token or a
+response body.
+
+Transient failures are retried with bounded backoff (network errors, HTTP 429,
+HTTP 5xx, and a spent GitHub quota reported as 403): three attempts by default, a
+capped wait, and the provider's `Retry-After` honoured unless it exceeds the cap.
+Authentication, permission and not-found refusals are never retried. The retry count
+is stored on the run and displayed with it.
+
+Freshness: a successful synchronisation older than 24 hours (`STALE_AFTER_HOURS`) is
+displayed as stale, on the integrations page and on the dashboard. An empty success
+reads "réussie — rien à lire", not a quiet success, and a `RUNNING` row left behind by
+a stopped process reads "interrompue" rather than "en cours".
+
+Retention: run history is kept for 90 days (`SYNC_RUN_RETENTION_DAYS`), with the most
+recent successful run of each connection always retained so freshness survives a long
+pause. `npm run db:cleanup` applies the policy — bounded, owner-scoped, safe to re-run
+and never scheduled from the web process. Snapshots are current state rather than
+history: a run replaces them, so they are not subject to this retention.
+
 ### Issues: an explicitly bounded run
 
 A run also fetches the open issues and pull requests of the tracked repositories,

@@ -1,15 +1,18 @@
 import { ProviderError, type IntegrationAdapter } from "@/modules/integrations/adapter";
-import type { IntegrationProvider } from "@/modules/integrations/domain";
+import type { IntegrationProvider, SyncRunStatus } from "@/modules/integrations/domain";
 import { createGitHubAdapter } from "@/modules/integrations/github";
 import { createGitLabAdapter } from "@/modules/integrations/gitlab";
+import { createRetryingFetch, type RetryPolicy } from "@/modules/integrations/retry";
 import {
   findConnectionForSync,
+  finishSyncRun,
   listConnections,
   markSyncFailure,
   markSyncSuccess,
   saveIssues,
   saveMilestones,
   saveSnapshots,
+  startSyncRun,
 } from "@/modules/integrations/repository";
 
 /**
@@ -23,6 +26,10 @@ import {
  * so replaying a synchronisation updates existing rows instead of duplicating
  * them. Nothing is written if a run fails halfway: a partial synchronisation
  * must not erase projects that were merely not fetched.
+ *
+ * Every attempt is recorded as a `SyncRun` row (counters, status, safe error,
+ * bounded retries), which is what lets the interface display freshness and explain
+ * a partial or failed pass instead of showing a misleading zero.
  */
 
 export function adapterFor(provider: IntegrationProvider): IntegrationAdapter {
@@ -48,6 +55,8 @@ export type SyncRunResult =
       issuesSkippedRepositories: number;
       /** Milestones followed after this run. */
       milestoneCount: number;
+      /** Bounded retries used by this run (transient failures only). */
+      retries: number;
       fetchedAt: Date;
     }
   | {
@@ -66,6 +75,12 @@ export type SyncRunResult =
 export type SyncDependencies = {
   /** Injected by tests so that no test reaches the network. */
   fetchImpl?: typeof fetch;
+  /** Retry policy override, injected by tests; production uses the default. */
+  retryPolicy?: Partial<RetryPolicy>;
+  /** Injected by tests so a retry does not wait in real time. */
+  sleep?: (delayMs: number) => Promise<void>;
+  /** Injected by tests so the jitter is deterministic. */
+  random?: () => number;
 };
 
 export async function synchroniseConnection(
@@ -96,15 +111,32 @@ export async function synchroniseConnection(
 
   const adapter = adapterFor(connection.provider);
 
+  // One wrapper per run: it only retries transient failures, and its counter feeds
+  // the run history. The adapters keep the injected `fetch` they always had.
+  const retryingFetch = createRetryingFetch({
+    fetchImpl: dependencies.fetchImpl ?? fetch,
+    policy: dependencies.retryPolicy,
+    sleep: dependencies.sleep,
+    random: dependencies.random,
+  });
+
+  // A run row exists for every attempt that starts; it is closed on success, on a
+  // partial read and on failure alike, so it can never linger as `RUNNING`.
+  const runId = await startSyncRun(connection.id);
+
+  let fetched = 0;
+  let created = 0;
+  let updated = 0;
+
   try {
     const outcome = await adapter.listProjects({
       token: connection.token,
       instanceUrl: connection.instanceUrl,
       owner: connection.externalOwner,
-      fetchImpl: dependencies.fetchImpl,
+      fetchImpl: retryingFetch.fetchImpl,
     });
 
-    await saveSnapshots({
+    const savedProjects = await saveSnapshots({
       connectionId: connection.id,
       provider: connection.provider,
       projects: outcome.projects,
@@ -112,6 +144,9 @@ export async function synchroniseConnection(
       // Every page was read, so snapshots the provider no longer returns can go.
       pruneMissing: true,
     });
+    fetched += outcome.projects.length;
+    created += savedProjects.created;
+    updated += savedProjects.updated;
 
     // Issues come from the projects of the same run: one synchronisation, one view.
     const issues = await adapter.listIssues({
@@ -119,10 +154,10 @@ export async function synchroniseConnection(
       instanceUrl: connection.instanceUrl,
       owner: connection.externalOwner,
       projects: outcome.projects,
-      fetchImpl: dependencies.fetchImpl,
+      fetchImpl: retryingFetch.fetchImpl,
     });
 
-    await saveIssues({
+    const savedIssues = await saveIssues({
       connectionId: connection.id,
       provider: connection.provider,
       issues: issues.issues,
@@ -135,6 +170,9 @@ export async function synchroniseConnection(
         issues.repositoriesSkipped === 0 &&
         issues.repositoriesFailed === 0,
     });
+    fetched += issues.issues.length;
+    created += savedIssues.created;
+    updated += savedIssues.updated;
 
     // Milestones come from the same repository selection, so the two views describe
     // exactly the same scope.
@@ -143,10 +181,10 @@ export async function synchroniseConnection(
       instanceUrl: connection.instanceUrl,
       owner: connection.externalOwner,
       projects: outcome.projects,
-      fetchImpl: dependencies.fetchImpl,
+      fetchImpl: retryingFetch.fetchImpl,
     });
 
-    await saveMilestones({
+    const savedMilestones = await saveMilestones({
       connectionId: connection.id,
       provider: connection.provider,
       milestones: milestones.milestones,
@@ -156,8 +194,28 @@ export async function synchroniseConnection(
         milestones.repositoriesSkipped === 0 &&
         milestones.repositoriesFailed === 0,
     });
+    fetched += milestones.milestones.length;
+    created += savedMilestones.created;
+    updated += savedMilestones.updated;
+
+    // Both scans cover the same repository selection, so their skipped and failed
+    // counts describe the same set of repositories: keep the maximum instead of
+    // counting the same repository twice. Either number means "not read" — the data
+    // of those repositories is unknown, not empty.
+    const skipped = Math.max(issues.repositoriesSkipped, milestones.repositoriesSkipped);
+    const failed = Math.max(issues.repositoriesFailed, milestones.repositoriesFailed);
+    const status: SyncRunStatus = skipped > 0 || failed > 0 ? "PARTIAL" : "SUCCESS";
 
     await markSyncSuccess(connection.id, outcome.fetchedAt);
+    await finishSyncRun(runId, {
+      status,
+      fetched,
+      created,
+      updated,
+      skipped,
+      failed,
+      retries: retryingFetch.retries(),
+    });
 
     return {
       connectionId: connection.id,
@@ -168,6 +226,7 @@ export async function synchroniseConnection(
       issueTracking: issues.supported,
       issuesSkippedRepositories: issues.repositoriesSkipped,
       milestoneCount: milestones.milestones.length,
+      retries: retryingFetch.retries(),
       fetchedAt: outcome.fetchedAt,
     };
   } catch (error) {
@@ -178,6 +237,18 @@ export async function synchroniseConnection(
         : "UNEXPECTED_ERROR";
 
     await markSyncFailure(connection.id, safeMessage);
+    // The counters show what the run had already read before it stopped; the safe
+    // summary explains why. Neither ever contains a token or a response body.
+    await finishSyncRun(runId, {
+      status: "FAILED",
+      fetched,
+      created,
+      updated,
+      skipped: 0,
+      failed: 0,
+      retries: retryingFetch.retries(),
+      errorSummary: safeMessage,
+    });
 
     return {
       connectionId: connection.id,

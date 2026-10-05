@@ -13,9 +13,13 @@ import { formatInstant } from "@/lib/dates";
 import { readSearchParam } from "@/lib/search-params";
 import {
   describeInstance,
+  describeSyncRun,
+  formatRunDuration,
   INTEGRATION_PROVIDERS,
+  isSyncStale,
   ISSUE_KINDS,
   type IntegrationProvider,
+  type SyncRunSummary,
 } from "@/modules/integrations/domain";
 import {
   collectIssueFilterOptions,
@@ -25,7 +29,12 @@ import {
   ISSUE_SORTS,
   type IssueFilters,
 } from "@/modules/integrations/issues";
-import { listConnections, listIssues, listMilestones } from "@/modules/integrations/repository";
+import {
+  listConnections,
+  listIssues,
+  listMilestones,
+  listSyncRuns,
+} from "@/modules/integrations/repository";
 import { connectProviderAction, syncConnectionAction } from "./actions";
 import { IssueExplorer } from "./issue-explorer";
 import { IssuesCard } from "./issues-card";
@@ -60,11 +69,25 @@ export default async function IntegrationsPage({
 }) {
   const user = await requireUser();
   const params = await searchParams;
-  const [connections, issues, milestones] = await Promise.all([
+  const [connections, issues, milestones, runs] = await Promise.all([
     listConnections(user.id),
     listIssues(user.id),
     listMilestones(user.id),
+    listSyncRuns(user.id),
   ]);
+
+  // One clock for the whole page: a connection stale at render is stale everywhere.
+  const now = new Date();
+  const isStaleAt = (date: Date) => isSyncStale(date, now);
+
+  // The newest run per connection is what "the last synchronisation" means; the
+  // full list below it is the history.
+  const latestRuns = new Map<string, SyncRunSummary>();
+  for (const run of runs) {
+    if (!latestRuns.has(run.connectionId)) {
+      latestRuns.set(run.connectionId, run);
+    }
+  }
 
   const issueConnections = connections.filter((connection) =>
     ISSUE_TRACKING_PROVIDERS.includes(connection.provider),
@@ -79,9 +102,6 @@ export default async function IntegrationsPage({
 
   const status = typeof params.status === "string" ? params.status : undefined;
   const sync = typeof params.sync === "string" ? params.sync : undefined;
-  const projectCount = typeof params.projects === "string" ? params.projects : undefined;
-  const issueCount = typeof params.issues === "string" ? params.issues : undefined;
-  const issueTracking = typeof params.tracking === "string" ? params.tracking : undefined;
   const reason = typeof params.reason === "string" ? params.reason : undefined;
   const code = typeof params.code === "string" ? params.code : undefined;
   // Repository focused in the issues card (`?repo=owner/name`). An unknown value
@@ -139,10 +159,8 @@ export default async function IntegrationsPage({
 
       {sync === "ok" ? (
         <Notice tone="info">
-          Synchronisation terminée : {projectCount ?? "0"} projet(s) mis à jour
-          {issueTracking === "off"
-            ? ". Les issues de ce fournisseur ne sont pas récupérées."
-            : `, ${issueCount ?? "0"} issue(s) ouverte(s) suivie(s).`}
+          Synchronisation terminée. Le détail de ce passage est conservé dans
+          l&apos;historique ci-dessous, y compris après un rafraîchissement.
         </Notice>
       ) : null}
 
@@ -208,7 +226,10 @@ export default async function IntegrationsPage({
                   <td className={tdClass}>
                     {connection.status === "CONNECTED" && connection.lastSyncedAt ? (
                       <>
-                        <Badge tone="positive">{connection.projectCount} projet(s)</Badge>
+                        <Badge tone={isStaleAt(connection.lastSyncedAt) ? "warning" : "positive"}>
+                          {connection.projectCount} projet(s)
+                          {isStaleAt(connection.lastSyncedAt) ? " — données anciennes" : ""}
+                        </Badge>
                         {ISSUE_TRACKING_PROVIDERS.includes(connection.provider) ? (
                           <span className="mt-1 block">
                             <Badge tone={connection.issueCount > 0 ? "warning" : "neutral"}>
@@ -255,6 +276,142 @@ export default async function IntegrationsPage({
           </TableShell>
         )}
       </Card>
+
+      <Card
+        title="Synchronisations"
+        description="Chaque passage est conservé : état, volumes et durée. Un dépôt non lu garde ses données inconnues — jamais comptées comme vides."
+      >
+        {runs.length === 0 ? (
+          <EmptyState
+            title="Aucune synchronisation"
+            description="Aucun passage n'a encore été enregistré. Lancez une synchronisation depuis la table ci-dessus : son détail apparaîtra ici, même après un rafraîchissement."
+          />
+        ) : (
+          <TableShell caption="Dernière synchronisation par connexion">
+            <thead>
+              <tr>
+                <th scope="col" className={thClass}>Connexion</th>
+                <th scope="col" className={thClass}>Résultat</th>
+                <th scope="col" className={thClass}>Terminé</th>
+                <th scope="col" className={thClass}>Durée</th>
+                <th scope="col" className={thClass}>Lus</th>
+                <th scope="col" className={thClass}>Créés</th>
+                <th scope="col" className={thClass}>Mis à jour</th>
+                <th scope="col" className={thClass}>Ignorés</th>
+                <th scope="col" className={thClass}>Échecs</th>
+                <th scope="col" className={thClass}>Relances</th>
+                <th scope="col" className={thClass}>Historique</th>
+              </tr>
+            </thead>
+            <tbody>
+              {connections
+                .filter((connection) => latestRuns.has(connection.id))
+                .map((connection) => {
+                  const run = latestRuns.get(connection.id)!;
+                  const outcome = describeSyncRun(run, { now });
+
+                  return (
+                    <tr key={run.id}>
+                      <td className={tdClass}>
+                        {connection.provider}
+                        <span className="block text-xs text-zinc-500 dark:text-zinc-400">
+                          {describeInstance(connection.provider, connection.instanceUrl)}
+                        </span>
+                      </td>
+                      <td className={tdClass}>
+                        <Badge tone={outcome.tone}>{outcome.label}</Badge>
+                        {outcome.note ? (
+                          <span className="block text-xs text-zinc-500 dark:text-zinc-400">
+                            {outcome.note}
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className={tdClass}>
+                        {run.finishedAt ? formatInstant(run.finishedAt) : "—"}
+                      </td>
+                      <td className={tdClass}>
+                        {formatRunDuration(run.startedAt, run.finishedAt)}
+                      </td>
+                      <td className={tdClass}>{run.fetched}</td>
+                      <td className={tdClass}>{run.created}</td>
+                      <td className={tdClass}>{run.updated}</td>
+                      <td className={tdClass}>{run.skipped}</td>
+                      <td className={tdClass}>{run.failed}</td>
+                      <td className={tdClass}>{run.retries}</td>
+                      <td className={tdClass}>
+                        <a href="#historique-synchronisations" className="underline">
+                          Voir
+                        </a>
+                      </td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </TableShell>
+        )}
+      </Card>
+
+      {runs.length > 0 ? (
+        <div id="historique-synchronisations">
+          <Card
+            title="Historique des synchronisations"
+            description="Les 50 derniers passages, du plus récent au plus ancien. La politique de conservation est documentée dans docs/architecture/overview.md."
+          >
+            <TableShell caption="Historique des synchronisations">
+              <thead>
+                <tr>
+                  <th scope="col" className={thClass}>Terminé</th>
+                  <th scope="col" className={thClass}>Connexion</th>
+                  <th scope="col" className={thClass}>Résultat</th>
+                  <th scope="col" className={thClass}>Durée</th>
+                  <th scope="col" className={thClass}>Lus</th>
+                  <th scope="col" className={thClass}>Créés</th>
+                  <th scope="col" className={thClass}>Mis à jour</th>
+                  <th scope="col" className={thClass}>Ignorés</th>
+                  <th scope="col" className={thClass}>Échecs</th>
+                  <th scope="col" className={thClass}>Relances</th>
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map((run) => {
+                  const outcome = describeSyncRun(run, { now });
+
+                  return (
+                    <tr key={run.id}>
+                      <td className={tdClass}>
+                        {run.finishedAt ? formatInstant(run.finishedAt) : "—"}
+                      </td>
+                      <td className={tdClass}>
+                        {run.provider}
+                        <span className="block text-xs text-zinc-500 dark:text-zinc-400">
+                          {run.connectionLabel}
+                        </span>
+                      </td>
+                      <td className={tdClass}>
+                        <Badge tone={outcome.tone}>{outcome.label}</Badge>
+                        {outcome.note ? (
+                          <span className="block text-xs text-zinc-500 dark:text-zinc-400">
+                            {outcome.note}
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className={tdClass}>
+                        {formatRunDuration(run.startedAt, run.finishedAt)}
+                      </td>
+                      <td className={tdClass}>{run.fetched}</td>
+                      <td className={tdClass}>{run.created}</td>
+                      <td className={tdClass}>{run.updated}</td>
+                      <td className={tdClass}>{run.skipped}</td>
+                      <td className={tdClass}>{run.failed}</td>
+                      <td className={tdClass}>{run.retries}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </TableShell>
+          </Card>
+        </div>
+      ) : null}
 
       <IssuesCard
         issues={issues}

@@ -244,6 +244,7 @@ secret must never be added to that block.
 | `npm run db:migrate` | Create and apply a migration (development) |
 | `npm run db:deploy` | Apply pending migrations (deployment) |
 | `npm run db:seed` | Create the owner account, or refresh its name (the stored password is kept) |
+| `npm run db:cleanup` | Delete synchronisation runs older than the retention window (keeps the latest success per connection) |
 | `npm run db:studio` | Browse the database |
 
 ## Project structure
@@ -291,6 +292,22 @@ the idempotent functions in `src/jobs/sync.ts` that such a trigger should call.
 A run is idempotent: replaying it updates snapshots instead of duplicating them.
 Nothing is written when a run fails halfway, and the previous successful
 synchronisation is kept for display.
+
+Every attempt is recorded as a `SyncRun` row: status (`SUCCESS`, `PARTIAL` or
+`FAILED`), counters, duration, retries and a safe error code. The integrations page
+shows the latest run per connection and a bounded history, and the dashboard flags a
+connection whose last success is older than 24 hours. A partial run names the
+repositories it did not read — their data is unknown, never zero.
+
+Transient failures (network errors, HTTP 429, HTTP 5xx, a spent GitHub quota) are
+retried with bounded backoff; authentication, permission and not-found refusals are
+final. The number of retries is kept on the run.
+
+Run history is kept for 90 days (`SYNC_RUN_RETENTION_DAYS`), except the most recent
+successful run of each connection. `npm run db:cleanup` applies the policy and is safe
+to re-run; nothing schedules it. Provider snapshots are current state, not history: a
+run replaces them, and closed issues leave the list, so they are not subject to this
+retention.
 
 ## Tests and CI
 

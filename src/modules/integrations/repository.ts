@@ -10,6 +10,8 @@ import {
   type ProviderIssue,
   type ProviderMilestone,
   type ProviderProject,
+  type SyncRunStatus,
+  type SyncRunSummary,
 } from "./domain";
 
 /**
@@ -170,10 +172,25 @@ export async function saveSnapshots(input: {
   projects: readonly ProviderProject[];
   fetchedAt: Date;
   pruneMissing?: boolean;
-}): Promise<number> {
+}): Promise<{ created: number; updated: number }> {
   const prisma = getPrisma();
 
+  // Existing identifiers are read once: an upsert does not tell a creation from an
+  // update, and the run history must distinguish them.
+  const existing = new Set(
+    (
+      await prisma.projectSnapshot.findMany({
+        where: { connectionId: input.connectionId },
+        select: { externalId: true },
+      })
+    ).map((row) => row.externalId),
+  );
+  let created = 0;
+
   for (const project of input.projects) {
+    if (!existing.has(project.externalId)) {
+      created += 1;
+    }
     await prisma.projectSnapshot.upsert({
       where: {
         connectionId_externalId: {
@@ -210,7 +227,7 @@ export async function saveSnapshots(input: {
     });
   }
 
-  return input.projects.length;
+  return { created, updated: input.projects.length - created };
 }
 
 export async function markSyncSuccess(
@@ -276,10 +293,25 @@ export async function saveIssues(input: {
   issues: readonly ProviderIssue[];
   fetchedAt: Date;
   pruneMissing?: boolean;
-}): Promise<number> {
+}): Promise<{ created: number; updated: number }> {
   const prisma = getPrisma();
 
+  // Same counting rule as the project snapshots: creations and refreshes are told
+  // apart so the run history can report both.
+  const existing = new Set(
+    (
+      await prisma.issueSnapshot.findMany({
+        where: { connectionId: input.connectionId },
+        select: { externalId: true },
+      })
+    ).map((row) => row.externalId),
+  );
+  let created = 0;
+
   for (const issue of input.issues) {
+    if (!existing.has(issue.externalId)) {
+      created += 1;
+    }
     const data = {
       provider: input.provider,
       kind: issue.kind,
@@ -318,7 +350,7 @@ export async function saveIssues(input: {
     });
   }
 
-  return input.issues.length;
+  return { created, updated: input.issues.length - created };
 }
 
 /**
@@ -409,10 +441,23 @@ export async function saveMilestones(input: {
   milestones: readonly ProviderMilestone[];
   fetchedAt: Date;
   pruneMissing?: boolean;
-}): Promise<number> {
+}): Promise<{ created: number; updated: number }> {
   const prisma = getPrisma();
 
+  const existing = new Set(
+    (
+      await prisma.milestoneSnapshot.findMany({
+        where: { connectionId: input.connectionId },
+        select: { externalId: true },
+      })
+    ).map((row) => row.externalId),
+  );
+  let created = 0;
+
   for (const milestone of input.milestones) {
+    if (!existing.has(milestone.externalId)) {
+      created += 1;
+    }
     const data = {
       provider: input.provider,
       repository: milestone.repository,
@@ -447,7 +492,7 @@ export async function saveMilestones(input: {
     });
   }
 
-  return input.milestones.length;
+  return { created, updated: input.milestones.length - created };
 }
 
 /**
@@ -511,4 +556,138 @@ export async function listMilestones(userId: string): Promise<MilestoneSummary[]
 
       return left.title.localeCompare(right.title);
     });
+}
+
+/** Opens a run before the first provider request. */
+export async function startSyncRun(connectionId: string): Promise<string> {
+  const run = await getPrisma().syncRun.create({
+    data: { connectionId },
+    select: { id: true },
+  });
+
+  return run.id;
+}
+
+/**
+ * Closes a run with its final status and counters. The caller closes it on success,
+ * on partial completion and on failure alike: a run must never stay `RUNNING`
+ * because the process forgot about it.
+ */
+export async function finishSyncRun(
+  runId: string,
+  input: {
+    status: SyncRunStatus;
+    fetched: number;
+    created: number;
+    updated: number;
+    skipped: number;
+    failed: number;
+    retries: number;
+    errorSummary?: string | null;
+  },
+): Promise<void> {
+  await getPrisma().syncRun.update({
+    where: { id: runId },
+    data: {
+      status: input.status,
+      finishedAt: new Date(),
+      fetched: input.fetched,
+      created: input.created,
+      updated: input.updated,
+      skipped: input.skipped,
+      failed: input.failed,
+      retries: input.retries,
+      errorSummary: input.errorSummary ?? null,
+    },
+  });
+}
+
+/**
+ * Recent runs of this owner, newest first, with the connection they belong to.
+ * Bounded by `limit`: the page reads one page of history, not the whole table.
+ */
+export async function listSyncRuns(
+  userId: string,
+  limit = 50,
+): Promise<SyncRunSummary[]> {
+  const rows = await getPrisma().syncRun.findMany({
+    where: { connection: { userId } },
+    orderBy: { startedAt: "desc" },
+    take: limit,
+    select: {
+      id: true,
+      connectionId: true,
+      status: true,
+      startedAt: true,
+      finishedAt: true,
+      fetched: true,
+      created: true,
+      updated: true,
+      skipped: true,
+      failed: true,
+      retries: true,
+      errorSummary: true,
+      connection: { select: { provider: true, instanceUrl: true } },
+    },
+  });
+
+  return rows.map((row) => {
+    const provider = row.connection.provider as IntegrationProvider;
+
+    return {
+      id: row.id,
+      connectionId: row.connectionId,
+      provider,
+      connectionLabel: describeInstance(provider, row.connection.instanceUrl),
+      status: row.status as SyncRunStatus,
+      startedAt: row.startedAt,
+      finishedAt: row.finishedAt,
+      fetched: row.fetched,
+      created: row.created,
+      updated: row.updated,
+      skipped: row.skipped,
+      failed: row.failed,
+      retries: row.retries,
+      errorSummary: row.errorSummary,
+    };
+  });
+}
+
+/**
+ * Retention: deletes runs older than the cutoff, except the most recent successful
+ * run of each connection — the freshness of the last success must survive even a
+ * long pause. Owner-scoped like every other read: a run is reachable only through
+ * the owner's connections. Bounded by the cutoff and safe to re-run.
+ */
+export async function pruneSyncRuns(input: {
+  userId: string;
+  olderThan: Date;
+}): Promise<number> {
+  const prisma = getPrisma();
+
+  const successes = await prisma.syncRun.findMany({
+    where: { connection: { userId: input.userId }, status: "SUCCESS" },
+    orderBy: { startedAt: "desc" },
+    select: { id: true, connectionId: true },
+  });
+
+  const retainedConnections = new Set<string>();
+  const keptIds: string[] = [];
+  for (const run of successes) {
+    if (!retainedConnections.has(run.connectionId)) {
+      retainedConnections.add(run.connectionId);
+      keptIds.push(run.id);
+    }
+  }
+
+  const deleted = await prisma.syncRun.deleteMany({
+    where: {
+      connection: { userId: input.userId },
+      startedAt: { lt: input.olderThan },
+      // An empty list means no successful run exists yet: nothing to protect.
+      ...(keptIds.length > 0 ? { id: { notIn: keptIds } } : {}),
+    },
+  });
+
+  return deleted.count;
 }

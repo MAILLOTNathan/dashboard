@@ -9,6 +9,7 @@ import {
 } from "@/components/ui";
 import { requireUser } from "@/lib/auth/guard";
 import { formatInstant } from "@/lib/dates";
+import { publicEnv } from "@/lib/env";
 import { formatMoney } from "@/lib/money";
 import { getDashboardOverview } from "@/modules/dashboard/queries";
 
@@ -54,10 +55,10 @@ export default async function DashboardPage() {
 				</h2>
 
 				<StatCard
-					label={`Solde cumulé (${budget.monthTotals[0].currency})`}
+					label={`Solde cumulé (${budget.monthTotals[0]?.currency ?? publicEnv.NEXT_PUBLIC_DEFAULT_CURRENCY})`}
 					value={formatMoney({
 						amount: budget.totalCumulative,
-						currency: budget.monthTotals[0].currency,
+						currency: budget.monthTotals[0]?.currency ?? publicEnv.NEXT_PUBLIC_DEFAULT_CURRENCY,
 					})}
 					hint="Solde cumulé depuis le début de l'historique."
 				/>
@@ -127,6 +128,13 @@ export default async function DashboardPage() {
 				</Notice>
 			</section>
 
+			{integrations.some((integration) => integration.stale) ? (
+				<Notice tone="warning">
+					Certaines connexions n&apos;ont plus été synchronisées depuis plus de 24 h.
+					Les données affichées restent les dernières lues, mais elles peuvent avoir vieilli.
+				</Notice>
+			) : null}
+
 			<div className="grid gap-4 lg:grid-cols-2">
 				<Card title="Immobilier" description="Biens suivis et flux rattachés.">
 					{realEstate.propertyCount === 0 ? (
@@ -171,7 +179,7 @@ export default async function DashboardPage() {
 						/>
 					) : (
 						<ul className="flex flex-col gap-2 text-sm">
-							{integrations.map(({ connection, state }) => (
+							{integrations.map(({ connection, state, stale }) => (
 								<li
 									key={connection.id}
 									className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-100 pb-2 last:border-0 dark:border-zinc-800"
@@ -184,10 +192,12 @@ export default async function DashboardPage() {
 									</span>
 
 									{state.kind === "CONNECTED" ? (
-										<Badge tone="positive">
-											{state.projectCount} projet
-											{state.projectCount > 1 ? "s" : ""} —{" "}
-											{formatInstant(state.lastSyncedAt)}
+										<Badge tone={stale ? "warning" : "positive"}>
+											{state.projectCount === 0
+												? "Aucun projet suivi"
+												: `${state.projectCount} projet${state.projectCount > 1 ? "s" : ""}`}{" "}
+											— {formatInstant(state.lastSyncedAt)}
+											{stale ? " — données anciennes" : ""}
 										</Badge>
 									) : state.kind === "ERROR" ? (
 										<Badge tone="negative">

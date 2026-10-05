@@ -170,3 +170,142 @@ export function describeConnectionState(connection: {
     projectCount: connection.projectCount,
   };
 }
+
+/** Statuses of a synchronisation run, as stored in `SyncRun`. */
+export const SYNC_RUN_STATUSES = ["RUNNING", "SUCCESS", "PARTIAL", "FAILED"] as const;
+export type SyncRunStatus = (typeof SYNC_RUN_STATUSES)[number];
+
+/**
+ * A successful synchronisation older than this is displayed as stale. 24 hours is a
+ * display threshold, not a contract: a run happens when the owner (or a future
+ * scheduler) triggers it, and the interface must say what it knows instead of
+ * implying freshness.
+ */
+export const STALE_AFTER_HOURS = 24;
+
+/** A `RUNNING` row older than this belonged to a process that stopped: not "in progress". */
+export const RUN_ABANDONED_AFTER_MS = 60 * 60 * 1000;
+
+export function isSyncStale(
+  lastSyncedAt: Date,
+  now: Date,
+  staleAfterHours: number = STALE_AFTER_HOURS,
+): boolean {
+  return now.getTime() - lastSyncedAt.getTime() > staleAfterHours * 3_600_000;
+}
+
+/** One synchronisation run as the interface displays it. Counters are explained in the schema. */
+export type SyncRunSummary = {
+  id: string;
+  connectionId: string;
+  provider: IntegrationProvider;
+  /** Public instance or self-hosted URL, so two connections stay distinguishable. */
+  connectionLabel: string;
+  status: SyncRunStatus;
+  startedAt: Date;
+  finishedAt: Date | null;
+  fetched: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  failed: number;
+  retries: number;
+  errorSummary: string | null;
+};
+
+export type SyncRunOutcome = {
+  /** Short label for the status badge. */
+  label: string;
+  /** Why the run is partial, failed or slow — or null when there is nothing to add. */
+  note: string | null;
+  tone: "neutral" | "positive" | "negative" | "warning";
+};
+
+/**
+ * Describes a stored run honestly:
+ * - an empty success says "nothing to read" instead of an unexplained success;
+ * - skipped or failed repositories are named, because their data is unknown;
+ * - retries are reported, so a flaky provider stays visible;
+ * - a `RUNNING` row left behind by a crashed process reads "interrompue".
+ */
+export function describeSyncRun(
+  run: {
+    status: SyncRunStatus;
+    startedAt: Date;
+    fetched: number;
+    skipped: number;
+    failed: number;
+    retries: number;
+    errorSummary: string | null;
+  },
+  options: { now?: Date; abandonedAfterMs?: number } = {},
+): SyncRunOutcome {
+  const now = options.now ?? new Date();
+  const abandonedAfterMs = options.abandonedAfterMs ?? RUN_ABANDONED_AFTER_MS;
+
+  if (
+    run.status === "RUNNING" &&
+    now.getTime() - run.startedAt.getTime() > abandonedAfterMs
+  ) {
+    return {
+      label: "Interrompue",
+      note: "Le processus s'est arrêté avant la fin de la synchronisation.",
+      tone: "warning",
+    };
+  }
+
+  const details: string[] = [];
+  if (run.errorSummary) {
+    details.push(run.errorSummary);
+  }
+  if (run.skipped > 0) {
+    details.push(`${run.skipped} dépôt(s) non lu(s) — leurs données restent inconnues`);
+  }
+  if (run.failed > 0) {
+    details.push(`${run.failed} dépôt(s) en échec`);
+  }
+  if (run.retries > 0) {
+    details.push(`${run.retries} relance(s) après erreur transitoire`);
+  }
+  const note = details.length > 0 ? details.join(" · ") : null;
+
+  switch (run.status) {
+    case "RUNNING":
+      return { label: "En cours", note, tone: "neutral" };
+    case "SUCCESS":
+      // An empty result is a factual outcome, not a quiet victory: say there was
+      // nothing to read rather than display an unexplained success.
+      return run.fetched === 0
+        ? { label: "Réussie — rien à lire", note, tone: "neutral" }
+        : { label: "Réussie", note, tone: "positive" };
+    case "PARTIAL":
+      return { label: "Partielle", note, tone: "warning" };
+    case "FAILED":
+      return { label: "Échec", note, tone: "negative" };
+  }
+}
+
+/** Human duration of a finished run; an unfinished run is not given one. */
+export function formatRunDuration(startedAt: Date, finishedAt: Date | null): string {
+  if (!finishedAt) {
+    return "en cours";
+  }
+
+  const seconds = Math.max(
+    0,
+    Math.round((finishedAt.getTime() - startedAt.getTime()) / 1000),
+  );
+  if (seconds < 60) {
+    return `${seconds} s`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    const rest = seconds % 60;
+    return rest === 0 ? `${minutes} min` : `${minutes} min ${String(rest).padStart(2, "0")} s`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return restMinutes === 0 ? `${hours} h` : `${hours} h ${String(restMinutes).padStart(2, "0")}`;
+}
