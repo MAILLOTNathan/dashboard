@@ -5,7 +5,14 @@ import {
   monthRange,
   parseMonthKey,
 } from "@/lib/dates";
-import { countTransactions, listAccounts, listTransactions } from "@/modules/budget/repository";
+import { buildBudgetReport, summariseBudgetReport, type BudgetReportTotal } from "@/modules/budget/report";
+import {
+  countTransactions,
+  listAccounts,
+  listBudgets,
+  listTransactions,
+  listTransactionsForSeries,
+} from "@/modules/budget/repository";
 import { computeCumulativeTotal, computeTotalsByCurrency, type MonthlyTotals } from "@/modules/budget/totals";
 import {
   describeConnectionState,
@@ -24,6 +31,10 @@ import { countProperties } from "@/modules/real-estate/repository";
  * - "no data yet" (nothing has been entered),
  * - "no data this month" (the account exists but the month is empty),
  * - "not connected" / "synchronisation failed" for a provider.
+ *
+ * Budget tracking reuses the report builder of the budget module, so its figures equal
+ * the ones on the budget page; a month without budget exposes an empty list, never a
+ * total of zero.
  */
 
 export type DashboardBudgetSummary = {
@@ -33,6 +44,13 @@ export type DashboardBudgetSummary = {
   monthTransactionCount: number;
   monthTotals: MonthlyTotals[];
   totalCumulative: Decimal;
+};
+
+export type DashboardBudgetTracking = {
+  /** One total per (currency, kind) of the month's budgets; empty when none is defined. */
+  totals: BudgetReportTotal[];
+  /** True when the month's transaction read hit its bound: the actuals may be understated. */
+  truncated: boolean;
 };
 
 export type DashboardIntegrationSummary = {
@@ -46,6 +64,8 @@ export type DashboardOverview = {
   monthKey: string;
   monthLabel: string;
   budget: DashboardBudgetSummary;
+  /** Planned versus actual totals of the month's budgets, the "Suivi" figures. */
+  budgetTracking: DashboardBudgetTracking;
   realEstate: { propertyCount: number };
   integrations: DashboardIntegrationSummary[];
 };
@@ -59,16 +79,31 @@ export async function getDashboardOverview(
   const { year, month } = parseMonthKey(monthKey);
   const range = monthRange(year, month);
 
-  const [monthTransactions, transactionCount, propertyCount, connections, accounts] =
-    await Promise.all([
-      listTransactions(userId, { from: range.start, to: range.end }),
-      countTransactions(userId),
-      countProperties(userId),
-      listConnections(userId),
-      listAccounts(userId),
-    ]);
+  const [
+    monthTransactions,
+    transactionCount,
+    propertyCount,
+    connections,
+    accounts,
+    monthBudgets,
+    monthSeries,
+  ] = await Promise.all([
+    listTransactions(userId, { from: range.start, to: range.end }),
+    countTransactions(userId),
+    countProperties(userId),
+    listConnections(userId),
+    listAccounts(userId),
+    listBudgets(userId, { year, month }),
+    // The same read as the 'Suivi' tab, so both screens compare the budgets to the same
+    // transactions; reaching the bound is reported through `truncated`.
+    listTransactionsForSeries(userId, { from: range.start, to: range.end }),
+  ]);
 
   const allTransactions = await listTransactions(userId);
+
+  const budgetTotals = summariseBudgetReport(
+    buildBudgetReport(monthBudgets, monthSeries.transactions),
+  );
 
   return {
     monthKey,
@@ -79,6 +114,10 @@ export async function getDashboardOverview(
       monthTransactionCount: monthTransactions.length,
       monthTotals: computeTotalsByCurrency(monthTransactions),
       totalCumulative: computeCumulativeTotal(allTransactions, { currency: "EUR" }),
+    },
+    budgetTracking: {
+      totals: budgetTotals,
+      truncated: monthSeries.truncated,
     },
     realEstate: { propertyCount },
     integrations: connections.map((connection) => ({

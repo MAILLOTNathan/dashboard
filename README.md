@@ -22,6 +22,10 @@ Working today:
   and two charts (a 12-month trend and the month's spending per category). Monthly
   budgets per category and currency complete the picture: a positive planned amount,
   duplicates for the same month refused, currencies kept separate with no conversion.
+  A **Suivi** tab compares that plan with reality: planned, actual and remaining per
+  category and currency, with per-currency totals for the spending envelopes and the
+  income goals under the table, over operation dates only, with refunds reducing their
+  category and never a conversion between currencies.
   A **Salaire** tab simulates earnings from an hourly rate: one click on the calendar
   plans a day, a second marks it really worked, a third clears it. A booking button
   records the month's worked amount as one income entry, in a default « Salaire »
@@ -35,7 +39,8 @@ Working today:
   requests counted per repository, an explorer with combinable filters (repository,
   type, assignee, label, milestone, state, text), and milestones with their due dates
   and progress. GitLab stays on project metadata, on purpose.
-- Dashboard with indicators derived from real data, distinguishing "no data",
+- Dashboard with indicators derived from real data — including the month's budget
+  tracking, planned versus actual per currency and kind — distinguishing "no data",
   "not connected" and "synchronisation failed".
 
 Not implemented yet:

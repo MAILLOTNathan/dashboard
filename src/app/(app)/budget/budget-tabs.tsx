@@ -4,14 +4,16 @@ import Link from "next/link";
  * The budget page's sub-sections.
  *
  * The page had grown into one long column — entry, filters, indicators, charts, the
- * month's list, the budgets and the salary simulator. Each tab is a link rather than a
- * client-side toggle: the choice lives in the URL (`?tab=`), so a view is shareable and
- * survives a refresh, and only the active section's queries run on the server.
+ * month's list, the budgets, their follow-up and the salary simulator. Each tab is a
+ * link rather than a client-side toggle: the choice lives in the URL (`?tab=`), so a
+ * view is shareable and survives a refresh, and only the active section's queries run
+ * on the server.
  */
 export const BUDGET_TABS = [
   { id: "operations", label: "Opérations" },
   { id: "analysis", label: "Analyse" },
   { id: "budgets", label: "Budgets" },
+  { id: "report", label: "Suivi" },
   { id: "salary", label: "Salaire" },
 ] as const;
 

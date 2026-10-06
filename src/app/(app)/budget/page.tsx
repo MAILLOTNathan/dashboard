@@ -9,6 +9,7 @@ import type { BudgetFilterValues } from "./budget-filters";
 import { BudgetTabs, resolveBudgetTab, type BudgetTab } from "./budget-tabs";
 import { BudgetsSection } from "./budgets-section";
 import { OperationsSection } from "./operations-section";
+import { ReportSection } from "./report-section";
 import { SalarySection } from "./salary-section";
 
 export const dynamic = "force-dynamic";
@@ -61,6 +62,7 @@ export default async function BudgetPage({
     operations: `Opérations de ${monthLabel}. Les montants sont signés : une sortie est négative.`,
     analysis: `Analyse de ${monthLabel} : totaux, tendance sur 12 mois et répartition par catégorie. Les transferts entre comptes comptent selon leur signe.`,
     budgets: `Budgets de ${monthLabel}, par catégorie et par devise. Les devises ne sont jamais converties.`,
+    report: `Suivi du budget de ${monthLabel} : prévu, réalisé et reste par catégorie et par devise, sans conversion.`,
     salary: `Salaire simulé de ${monthLabel} : un taux horaire, un calendrier de jours prévus puis travaillés, et la recette du mois en un clic.`,
   };
 
@@ -102,6 +104,8 @@ export default async function BudgetPage({
       {tab === "budgets" ? (
         <BudgetsSection userId={user.id} monthKey={monthKey} editBudgetId={editBudgetId} />
       ) : null}
+
+      {tab === "report" ? <ReportSection userId={user.id} monthKey={monthKey} /> : null}
 
       {tab === "salary" ? <SalarySection userId={user.id} monthKey={monthKey} /> : null}
     </>

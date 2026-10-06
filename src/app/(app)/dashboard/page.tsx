@@ -11,6 +11,7 @@ import { requireUser } from "@/lib/auth/guard";
 import { formatInstant } from "@/lib/dates";
 import { publicEnv } from "@/lib/env";
 import { formatMoney } from "@/lib/money";
+import { describeBudgetVariance } from "@/modules/budget/report";
 import { getDashboardOverview } from "@/modules/dashboard/queries";
 
 // Personal financial data must never be served from a static cache.
@@ -20,7 +21,8 @@ export default async function DashboardPage() {
 	const user = await requireUser();
 	const overview = await getDashboardOverview(user.id);
 
-	const { budget, realEstate, integrations, monthLabel } = overview;
+	const { budget, budgetTracking, realEstate, integrations, monthKey, monthLabel } =
+		overview;
 	const hasAnyTransaction = budget.transactionCount > 0;
 
 	return (
@@ -53,6 +55,79 @@ export default async function DashboardPage() {
 				>
 					Budget — {monthLabel}
 				</h2>
+
+				<div className="flex flex-col gap-3">
+					<div className="flex flex-wrap items-baseline justify-between gap-2">
+						<h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
+							Suivi du budget — {monthLabel}
+						</h3>
+						<Link
+							href={`/budget?month=${monthKey}&tab=report`}
+							className="text-sm underline-offset-2 hover:underline"
+						>
+							Détail par catégorie
+						</Link>
+					</div>
+
+					{budgetTracking.totals.length === 0 ? (
+						<Notice tone="info">
+							Aucun budget n&apos;est défini pour {monthLabel} : il n&apos;y a rien à
+							comparer, ce qui n&apos;est pas la même chose qu&apos;un suivi à zéro.{" "}
+							<Link
+								href={`/budget?month=${monthKey}&tab=budgets`}
+								className="underline underline-offset-2"
+							>
+								Définir les budgets
+							</Link>
+							.
+						</Notice>
+					) : (
+						<>
+							{budgetTracking.truncated ? (
+								<Notice tone="warning">
+									Le mois dépasse la limite de lecture : le réalisé du suivi est
+									partiel et les écarts peuvent être sous-estimés.
+								</Notice>
+							) : null}
+
+							<div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+								{budgetTracking.totals.map((total) => {
+									const variance = describeBudgetVariance(total);
+
+									return (
+										<StatCard
+											key={`${total.currency}|${total.categoryKind}`}
+											label={
+												total.categoryKind === "EXPENSE"
+													? `Budget dépenses (${total.currency})`
+													: `Objectif recettes (${total.currency})`
+											}
+											value={formatMoney({
+												amount: total.remaining,
+												currency: total.currency,
+											})}
+											tone={variance.tone}
+											hint={`Prévu ${formatMoney({
+												amount: total.planned,
+												currency: total.currency,
+											})} · réalisé ${formatMoney({
+												amount: total.actual,
+												currency: total.currency,
+											})}`}
+										/>
+									);
+								})}
+							</div>
+
+							<p className="text-xs text-zinc-500 dark:text-zinc-400">
+								Le reste compare les budgets aux opérations du mois rattachées à
+								une catégorie budgétée : transferts et opérations sans catégorie
+								exclus, devises jamais converties. Un reste négatif sur les dépenses
+								signale un dépassement.
+							</p>
+						</>
+					)}
+				</div>
 
 				<StatCard
 					label={`Solde cumulé (${budget.monthTotals[0]?.currency ?? publicEnv.NEXT_PUBLIC_DEFAULT_CURRENCY})`}

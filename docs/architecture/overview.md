@@ -14,7 +14,7 @@ the pages that consume it.
 | Module | Responsibility | Key files |
 | --- | --- | --- |
 | `identity` | The single owner account. No public sign-up: the account is created by the seed script. | `repository.ts` |
-| `budget` | Accounts, categories, transactions, monthly budgets, salary simulation and monthly aggregation. | `domain.ts`, `totals.ts`, `salary.ts`, `repository.ts` |
+| `budget` | Accounts, categories, transactions, monthly budgets, budget follow-up, salary simulation and monthly aggregation. | `domain.ts`, `totals.ts`, `salary.ts`, `report.ts`, `repository.ts` |
 | `real-estate` | Properties, cashflow entries, due dates, and the double-counting rule. | `domain.ts`, `repository.ts` |
 | `integrations` | Read-only GitHub and GitLab connections, provider adapters, snapshots. | `domain.ts`, `adapter.ts`, `github.ts`, `gitlab.ts`, `repository.ts` |
 | `dashboard` | Read-only aggregation for the home page. | `queries.ts` |
@@ -128,6 +128,27 @@ asked for: a cascade here would silently change what a property is worth.
   counts by its sign: recording both legs of one internal transfer leaves the net
   unchanged, while a single leg (money sent to savings, whose destination is not tracked)
   lowers it.
+- Budget follow-up (budget page, « Suivi » tab) — planned versus actual for one month,
+  per category and currency. It reuses the rules above rather than defining its own, so
+  a figure here always equals the same figure elsewhere:
+  - *planned* — the budget amount, a positive magnitude whatever the category's kind.
+  - *actual* — transactions dated in the month (operation date, exclusive upper bound),
+    attached to the category and carrying the row's currency only. An `EXPENSE` is
+    reported positive, an `INCOME` positive, so both read in the plan's direction; a
+    refund (a positive amount on an `EXPENSE`) reduces the actual, and refunds exceeding
+    the spending legitimately give a negative actual. Transfers have no category by design
+    and never appear; uncategorised transactions are ignored.
+  - *remaining* — planned − actual. Negative on a spending budget reads « Dépassé »; an
+    income goal reads « Objectif atteint » or « Sous l'objectif », never "over budget".
+  - *totals* — the rows of one currency and one kind added up: one total for the month's
+    spending envelopes, one for its income goals. A kind is never summed into another (an
+    envelope and a goal do not read in the same direction) and no total crosses
+    currencies. The Suivi tab writes them under the table, the dashboard shows them as
+    cards whose colour follows the same reading as the badges; a month without budget has
+    no total at all, rather than a zero.
+  - Months without transactions keep their budget rows with a zero actual, and no figure
+    is ever converted between currencies: a transaction in another currency does not feed
+    the row.
 - Salary simulation (budget page, « Salaire » tab) — a planning view whose figures are
   only written into the accounts through the explicit booking button. A day clicked once
   is `PLANNED`, clicked twice `WORKED`, a third click removes it; the two states are

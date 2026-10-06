@@ -69,14 +69,16 @@ export function StatCard({
   label: string;
   value: string;
   hint?: ReactNode;
-  tone?: "neutral" | "positive" | "negative";
+  tone?: "neutral" | "positive" | "negative" | "warning";
 }) {
   const toneClass =
     tone === "positive"
       ? "text-emerald-700 dark:text-emerald-400"
       : tone === "negative"
         ? "text-rose-700 dark:text-rose-400"
-        : "text-zinc-900 dark:text-zinc-100";
+        : tone === "warning"
+          ? "text-amber-700 dark:text-amber-300"
+          : "text-zinc-900 dark:text-zinc-100";
 
   return (
     <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
