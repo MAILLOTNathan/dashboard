@@ -3,12 +3,19 @@ import { describe, expect, it } from "vitest";
 import {
   accountInputSchema,
   assertAmountMatchesType,
+  budgetIdentityKey,
+  budgetInputSchema,
+  budgetMonthKey,
+  budgetUpdateSchema,
   categoryInputSchema,
   categoryKindForTransactionType,
   categoryMismatchReason,
+  findDuplicateBudget,
+  toBudgetFormInitialValues,
   toTransactionFormInitialValues,
   transactionFormSchema,
   transactionUpdateSchema,
+  type BudgetRecord,
   type TransactionRecord,
   type TransactionType,
 } from "./domain";
@@ -322,5 +329,190 @@ describe("assertAmountMatchesType", () => {
     expect(() => assertAmountMatchesType(parseAmount("0", "EXPENSE"), "EXPENSE")).toThrow(
       /dépense de zéro/,
     );
+  });
+});
+
+describe("budgetInputSchema", () => {
+  /** Fictitious values only. */
+  const validBudget = {
+    categoryId: "category-1",
+    month: "2026-10",
+    currency: "EUR",
+    amount: "300,00",
+  };
+
+  it("parses a month into the two integers the model stores", () => {
+    const result = budgetInputSchema.safeParse(validBudget);
+
+    expect(result.success).toBe(true);
+    // Exactly the stored contract: no bounds or dates travel along with the month.
+    expect(result.data?.month).toEqual({ year: 2026, month: 10 });
+  });
+
+  it("parses a hand-typed amount into an exact decimal", () => {
+    const result = budgetInputSchema.safeParse({ ...validBudget, amount: "1 234,56" });
+
+    expect(result.success).toBe(true);
+    expect(result.data?.amount.toFixed(2)).toBe("1234.56");
+  });
+
+  it("refuses a plan that is not strictly positive", () => {
+    // The absence of a budget is the absence of a row: zero says nothing.
+    expect(budgetInputSchema.safeParse({ ...validBudget, amount: "0" }).success).toBe(false);
+    expect(budgetInputSchema.safeParse({ ...validBudget, amount: "-10,00" }).success).toBe(
+      false,
+    );
+  });
+
+  it("refuses an invalid amount rather than rounding it", () => {
+    expect(budgetInputSchema.safeParse({ ...validBudget, amount: "12,345" }).success).toBe(
+      false,
+    );
+    expect(budgetInputSchema.safeParse({ ...validBudget, amount: "trois cents" }).success).toBe(
+      false,
+    );
+  });
+
+  it("refuses a month outside the calendar bounds", () => {
+    for (const month of ["2026-13", "2026-00", "1969-12", "10-2026", "2026-10-01"]) {
+      expect(budgetInputSchema.safeParse({ ...validBudget, month }).success, month).toBe(
+        false,
+      );
+    }
+
+    expect(budgetInputSchema.safeParse({ ...validBudget, month: "2026-01" }).success).toBe(
+      true,
+    );
+  });
+
+  it("refuses an unsupported currency and a missing category", () => {
+    const wrongCurrency = budgetInputSchema.safeParse({ ...validBudget, currency: "XYZ" });
+
+    expect(wrongCurrency.success).toBe(false);
+    expect(wrongCurrency.error?.issues[0]?.message).toBe("Devise non prise en charge.");
+    expect(budgetInputSchema.safeParse({ ...validBudget, categoryId: "" }).success).toBe(false);
+  });
+
+  it("keeps the currencies of the same month apart", () => {
+    const euros = budgetInputSchema.parse(validBudget);
+    const dollars = budgetInputSchema.parse({ ...validBudget, currency: "USD" });
+
+    expect(euros.currency).toBe("EUR");
+    expect(dollars.currency).toBe("USD");
+  });
+});
+
+describe("budgetUpdateSchema", () => {
+  const validBudget = {
+    categoryId: "category-1",
+    month: "2026-10",
+    currency: "EUR",
+    amount: "300,00",
+  };
+
+  it("parses an edition like a creation, plus the row identifier", () => {
+    const result = budgetUpdateSchema.safeParse({ ...validBudget, id: "budget-1" });
+
+    expect(result.success).toBe(true);
+    expect(result.data?.id).toBe("budget-1");
+    expect(result.data?.amount.toFixed(2)).toBe("300.00");
+  });
+
+  it("requires the identifier of the row", () => {
+    expect(budgetUpdateSchema.safeParse({ ...validBudget, id: "   " }).success).toBe(false);
+  });
+
+  it("inherits the creation rules rather than restating them", () => {
+    // Two contracts that drifted apart is how an edition ends up accepting what a
+    // creation refuses, so the rules are asserted on both.
+    const zeroPlan = { ...validBudget, amount: "0" };
+
+    expect(budgetUpdateSchema.safeParse({ ...zeroPlan, id: "budget-1" }).success).toBe(false);
+    expect(budgetInputSchema.safeParse(zeroPlan).success).toBe(false);
+  });
+
+  it("carries no owner, even when one is posted", () => {
+    const result = budgetUpdateSchema.safeParse({
+      ...validBudget,
+      id: "budget-1",
+      userId: "someone-else",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.data).not.toHaveProperty("userId");
+  });
+});
+
+describe("budget identity", () => {
+  const identity = { categoryId: "category-1", year: 2026, month: 10, currency: "EUR" as const };
+
+  it("keys one month the way the rest of the project writes it", () => {
+    expect(budgetMonthKey(2026, 10)).toBe("2026-10");
+    expect(budgetMonthKey(2026, 1)).toBe("2026-01");
+  });
+
+  it("gives the same identity to the same category, month and currency", () => {
+    expect(budgetIdentityKey(identity)).toBe(budgetIdentityKey({ ...identity }));
+  });
+
+  it("keeps another currency, category or month distinct", () => {
+    // Currency separation: EUR and USD are two budgets, not a duplicate.
+    expect(budgetIdentityKey({ ...identity, currency: "USD" })).not.toBe(
+      budgetIdentityKey(identity),
+    );
+    expect(budgetIdentityKey({ ...identity, categoryId: "category-2" })).not.toBe(
+      budgetIdentityKey(identity),
+    );
+    expect(budgetIdentityKey({ ...identity, month: 11 })).not.toBe(budgetIdentityKey(identity));
+  });
+
+  it("finds the duplicate row of the same period, and no other", () => {
+    const existing = [
+      { id: "budget-usd", categoryId: "category-1", year: 2026, month: 10, currency: "USD" as const },
+    ];
+
+    expect(findDuplicateBudget(identity, existing)).toBeNull();
+    expect(
+      findDuplicateBudget({ ...identity, currency: "USD" }, existing)?.id,
+    ).toBe("budget-usd");
+  });
+
+  it("finds nothing in an empty month", () => {
+    expect(findDuplicateBudget(identity, [])).toBeNull();
+  });
+});
+
+describe("toBudgetFormInitialValues", () => {
+  /** Fictitious row only. */
+  const record: BudgetRecord = {
+    id: "budget-1",
+    categoryId: "category-1",
+    categoryName: "Courses",
+    categoryKind: "EXPENSE",
+    year: 2026,
+    month: 10,
+    currency: "EUR",
+    amount: new Decimal("300.00"),
+  };
+
+  it("hands the form strings only, never a Decimal", () => {
+    const values = toBudgetFormInitialValues(record);
+
+    // Same boundary rule as the transaction form: a Decimal cannot cross into a client
+    // component, and a month input only understands `YYYY-MM`.
+    for (const value of Object.values(values)) {
+      expect(typeof value).toBe("string");
+    }
+
+    expect(values.month).toBe("2026-10");
+    expect(values.amount).toBe("300.00");
+  });
+
+  it("round-trips through the module's own schema without moving a cent", () => {
+    const parsed = budgetInputSchema.safeParse(toBudgetFormInitialValues(record));
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.amount.toFixed(2)).toBe("300.00");
+    expect(parsed.data?.month).toEqual({ year: 2026, month: 10 });
   });
 });

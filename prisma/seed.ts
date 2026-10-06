@@ -1,5 +1,7 @@
 import "dotenv/config";
 import { hashPassword } from "../src/lib/auth/password";
+import { ensureCategory } from "../src/modules/budget/repository";
+import { SALARY_CATEGORY_NAME } from "../src/modules/budget/salary";
 import { PASSWORD_MIN_LENGTH } from "../src/modules/identity/domain";
 import { findOwnerByEmail, upsertOwner } from "../src/modules/identity/repository";
 
@@ -45,6 +47,12 @@ async function main(): Promise<void> {
     ? existing.passwordHash
     : await hashPassword(password);
   const owner = await upsertOwner({ email, name, passwordHash });
+
+  // The salary simulator books its income into a « Salaire » category: it is created here
+  // so every owner has it from the start. The booking action also creates it on demand,
+  // which covers owners seeded before this default existed. Never personal data: the
+  // category is empty until the owner records something in it.
+  await ensureCategory({ userId: owner.id, name: SALARY_CATEGORY_NAME, kind: "INCOME" });
 
   // Only the identifier is printed: never the password, never the hash.
   console.log(

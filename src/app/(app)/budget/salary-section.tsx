@@ -1,0 +1,245 @@
+import type Decimal from "decimal.js";
+import Link from "next/link";
+import { Card, Notice, StatCard } from "@/components/ui";
+import {
+  formatDateOnly,
+  formatMonthLabel,
+  monthRange,
+  parseMonthKey,
+  toDateOnlyString,
+} from "@/lib/dates";
+import { formatMoney, toDecimalString } from "@/lib/money";
+import {
+  computeSalarySummary,
+  monthCalendarCells,
+  SALARY_CATEGORY_NAME,
+  salaryBookingRef,
+  salaryEquivalents,
+} from "@/modules/budget/salary";
+import {
+  findSalarySetting,
+  findTransactionByExternalRef,
+  listAccounts,
+  listWorkDays,
+} from "@/modules/budget/repository";
+import { SalaryBookingForm } from "./salary-booking-form";
+import { SalaryForm } from "./salary-form";
+import { WorkCalendar, type WorkCalendarDay } from "./work-calendar";
+
+/** "7,5 h": hours as a human reads them; the stored decimal stays on the server. */
+function formatHours(value: Decimal): string {
+  return `${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(
+    value.toNumber(),
+  )} h`;
+}
+
+/**
+ * "Salaire" tab: a wage and a calendar of days planned then worked.
+ *
+ * The simulation reads its own two tables; writing into the accounts is a deliberate,
+ * separate click (« Enregistrer la recette ») that creates one income transaction for the
+ * month — category « Salaire », created when missing. Until that click the simulated
+ * amounts stay out of the account and budget totals, and the booked entry is never
+ * counted twice. The month picker belongs to this tab because the calendar is consulted
+ * month by month, like the operations.
+ */
+export async function SalarySection({
+  userId,
+  monthKey,
+}: {
+  userId: string;
+  /** `YYYY-MM`, the month shared by every tab. */
+  monthKey: string;
+}) {
+  const { year, month } = parseMonthKey(monthKey);
+  const range = monthRange(year, month);
+
+  const [setting, workDays, accounts, booking] = await Promise.all([
+    findSalarySetting(userId),
+    listWorkDays(userId, { from: range.start, to: range.end }),
+    listAccounts(userId),
+    findTransactionByExternalRef(userId, salaryBookingRef(year, month)),
+  ]);
+
+  if (!setting) {
+    return (
+      <Card
+        title="Salaire"
+        description="Le simulateur transforme des heures cliquées sur un calendrier en montants, à partir d'un taux horaire. La recette du mois s'enregistre ensuite en un clic, dans la catégorie « Salaire » : rien n'est écrit avant ce clic."
+      >
+        <div className="flex flex-col gap-3">
+          <Notice tone="info">
+            Définissez d&apos;abord le taux horaire : le calendrier s&apos;active ensuite.
+          </Notice>
+          <SalaryForm />
+        </div>
+      </Card>
+    );
+  }
+
+  const currency = setting.currency;
+  const summary = computeSalarySummary(workDays, setting.hourlyRate);
+  const equivalents = salaryEquivalents(setting.hourlyRate, setting.hoursPerDay);
+  const days: WorkCalendarDay[] = workDays.map((day) => ({
+    date: toDateOnlyString(day.date),
+    status: day.status,
+    hours: toDecimalString(day.hours),
+  }));
+  const hasClickedDays = workDays.length > 0;
+  // Booking: only accounts in the salary currency are offered; the action refuses any
+  // other rather than converting between currencies.
+  const salaryAccounts = accounts.filter((account) => account.currency === currency);
+  const lastWorkedDay = [...workDays].reverse().find((day) => day.status === "WORKED");
+
+  return (
+    <Card
+      title={`Salaire — ${formatMonthLabel(year, month)}`}
+      description={`Simulation à partir d'un taux horaire de ${formatMoney({
+        amount: setting.hourlyRate,
+        currency,
+      })}. Un jour cliqué est d'abord prévu (budget simulé), puis confirmé travaillé quand il a réellement lieu. Le simulateur n'écrit rien tout seul : la recette du mois s'enregistre en un clic, une seule fois.`}
+    >
+      <form method="get" action="/budget" className="mb-4 flex flex-wrap items-end gap-2">
+        <input type="hidden" name="tab" value="salary" />
+
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="font-medium">Mois affiché</span>
+          <input
+            type="month"
+            name="month"
+            defaultValue={monthKey}
+            className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-900"
+          />
+        </label>
+
+        <button
+          type="submit"
+          className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white dark:bg-zinc-100 dark:text-zinc-900"
+        >
+          Afficher
+        </button>
+      </form>
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard
+          label={`Taux horaire (${currency})`}
+          value={formatMoney({ amount: setting.hourlyRate, currency })}
+          hint={`Équivalents indicatifs : ${formatMoney({
+            amount: equivalents.daily,
+            currency,
+          })} / jour (${formatHours(setting.hoursPerDay)}) · ${formatMoney({
+            amount: equivalents.weekly,
+            currency,
+          })} / semaine (5 jours) · ${formatMoney({
+            amount: equivalents.monthly,
+            currency,
+          })} / mois.`}
+        />
+        <StatCard
+          label="Travaillé (mois)"
+          value={formatMoney({ amount: summary.workedAmount, currency })}
+          hint={`${formatHours(summary.workedHours)} confirmées sur le calendrier.`}
+          tone={summary.workedAmount.isZero() ? "neutral" : "positive"}
+        />
+        <StatCard
+          label="Prévu (mois)"
+          value={formatMoney({ amount: summary.plannedAmount, currency })}
+          hint={`${formatHours(summary.plannedHours)} planifiées, pas encore confirmées.`}
+        />
+        <StatCard
+          label="Total simulé"
+          value={formatMoney({ amount: summary.totalAmount, currency })}
+          hint={`Réalisé + prévu : ${formatHours(summary.totalHours)}, chaque jour compté une fois.`}
+        />
+      </div>
+
+      {!hasClickedDays ? (
+        <div className="mt-4">
+          <Notice tone="info">
+            Aucun jour cliqué pour {formatMonthLabel(year, month)} : les montants sont à
+            zéro parce que rien n&apos;est planifié, pas parce qu&apos;une donnée manque.
+            Cliquez un jour ci-dessous pour le planifier.
+          </Notice>
+        </div>
+      ) : null}
+
+      <div className="mt-4">
+        <WorkCalendar
+          cells={monthCalendarCells(year, month)}
+          days={days}
+          todayKey={toDateOnlyString(new Date())}
+        />
+      </div>
+
+      <section className="mt-4 rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
+        <h3 className="text-sm font-medium">Enregistrer la recette du mois</h3>
+        <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+          Crée une opération de recette, catégorie « {SALARY_CATEGORY_NAME} », avec le
+          montant des heures confirmées travaillées ce mois. Une seule recette par mois,
+          et jamais écrite sans ce clic.
+        </p>
+
+        <div className="mt-3">
+          {summary.workedAmount.isZero() ? (
+            <Notice tone="info">
+              Aucune heure marquée travaillée pour {formatMonthLabel(year, month)} :
+              confirmez au moins un jour (deuxième clic) pour pouvoir enregistrer la
+              recette.
+            </Notice>
+          ) : booking ? (
+            <div className="flex flex-col items-start gap-2">
+              <Notice tone="info">
+                Recette déjà enregistrée :{" "}
+                {formatMoney({ amount: booking.amount, currency: booking.currency })} le{" "}
+                {formatDateOnly(booking.operationDate)}
+                {booking.accountName ? ` (${booking.accountName})` : ""}. Si les heures du
+                mois évoluent, corrigez l&apos;opération : cette recette ne se met pas à
+                jour toute seule.
+              </Notice>
+              <Link
+                href={`/budget?month=${monthKey}&tab=operations&edit=${booking.id}`}
+                className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                Corriger dans Opérations
+              </Link>
+            </div>
+          ) : salaryAccounts.length === 0 ? (
+            <Notice tone="warning">
+              Aucun compte en {currency} : créez-en un dans l&apos;onglet Opérations pour
+              pouvoir enregistrer la recette (aucune conversion n&apos;est faite).
+            </Notice>
+          ) : (
+            <SalaryBookingForm
+              monthKey={monthKey}
+              accounts={salaryAccounts.map((account) => ({
+                id: account.id,
+                name: account.name,
+              }))}
+              defaultDate={
+                lastWorkedDay
+                  ? toDateOnlyString(lastWorkedDay.date)
+                  : toDateOnlyString(new Date())
+              }
+              amountLabel={formatMoney({ amount: summary.workedAmount, currency })}
+            />
+          )}
+        </div>
+      </section>
+
+      <details className="mt-4">
+        <summary className="cursor-pointer text-sm font-medium">
+          Modifier le taux horaire
+        </summary>
+        <div className="pt-3">
+          <SalaryForm
+            editing={{
+              hourlyRate: toDecimalString(setting.hourlyRate),
+              hoursPerDay: toDecimalString(setting.hoursPerDay),
+              currency: setting.currency,
+            }}
+          />
+        </div>
+      </details>
+    </Card>
+  );
+}

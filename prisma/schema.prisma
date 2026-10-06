@@ -70,6 +70,13 @@ enum SyncRunStatus {
   FAILED
 }
 
+/// The two levels of the salary calendar: a day is planned (the simulated budget),
+/// then really worked (the amount actually earned). One state at a time.
+enum WorkDayStatus {
+  PLANNED
+  WORKED
+}
+
 /// An open issue and an open pull request arrive from the same provider endpoint;
 /// they stay distinct because they call for different actions.
 enum IssueKind {
@@ -89,6 +96,9 @@ model User {
   accounts    Account[]
   categories  Category[]
   transactions Transaction[]
+  budgets     Budget[]
+  salarySetting SalarySetting?
+  workDays    WorkDay[]
   properties  Property[]
   connections IntegrationConnection[]
 }
@@ -121,6 +131,7 @@ model Category {
 
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   transactions Transaction[]
+  budgets      Budget[]
 
   @@unique([userId, name, kind])
   @@index([userId])
@@ -152,6 +163,66 @@ model Transaction {
   @@unique([accountId, externalRef])
   @@index([userId, operationDate])
   @@index([userId, categoryId])
+}
+
+/// A planned amount for one category, one month and one currency.
+///
+/// The amount is a positive magnitude: the category's kind says whether this is a
+/// spending envelope or an income target. Currencies are never converted, so the same
+/// category may carry one budget per currency — and exactly one, which the unique
+/// constraint enforces.
+model Budget {
+  id         String   @id @default(cuid())
+  userId     String
+  categoryId String
+  year       Int
+  /// 1-based month, as a human writes it.
+  month      Int
+  currency   String   @default("EUR") @db.Char(3)
+  amount     Decimal  @db.Decimal(18, 2)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, categoryId, year, month, currency])
+  @@index([userId, year, month])
+}
+
+/// The owner's wage, reduced to the one unit the simulation needs: an exact hourly
+/// rate. Weekly and monthly amounts are only derived figures shown next to it (see
+/// `salaryEquivalents`), never stored in those units.
+model SalarySetting {
+  id         String   @id @default(cuid())
+  userId     String   @unique
+  /// Exact hourly rate, in `currency`.
+  hourlyRate Decimal  @db.Decimal(18, 2)
+  /// Default length of a plannable day, in hours. Applies to future clicks only.
+  hoursPerDay Decimal @db.Decimal(4, 2)
+  currency   String   @default("EUR") @db.Char(3)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// One clicked day of the salary calendar. The status is the level the owner reached:
+/// `PLANNED` feeds the simulated budget, `WORKED` the real amount. One row per owner
+/// and day, which the unique constraint enforces; the third click removes the row.
+model WorkDay {
+  id     String        @id @default(cuid())
+  userId String
+  date   DateTime      @db.Date
+  status WorkDayStatus @default(PLANNED)
+  /// Hours for this day, adjustable by half-hours.
+  hours  Decimal       @db.Decimal(4, 2)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
 }
 
 model Property {

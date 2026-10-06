@@ -14,7 +14,7 @@ the pages that consume it.
 | Module | Responsibility | Key files |
 | --- | --- | --- |
 | `identity` | The single owner account. No public sign-up: the account is created by the seed script. | `repository.ts` |
-| `budget` | Accounts, categories, transactions and monthly aggregation. | `domain.ts`, `totals.ts`, `repository.ts` |
+| `budget` | Accounts, categories, transactions, monthly budgets, salary simulation and monthly aggregation. | `domain.ts`, `totals.ts`, `salary.ts`, `repository.ts` |
 | `real-estate` | Properties, cashflow entries, due dates, and the double-counting rule. | `domain.ts`, `repository.ts` |
 | `integrations` | Read-only GitHub and GitLab connections, provider adapters, snapshots. | `domain.ts`, `adapter.ts`, `github.ts`, `gitlab.ts`, `repository.ts` |
 | `dashboard` | Read-only aggregation for the home page. | `queries.ts` |
@@ -100,6 +100,21 @@ asked for: a cascade here would silently change what a property is worth.
   a replayed request. A `TRANSFER` takes no category at all: it moves money rather than
   spending it, so there is nothing to label — its amount still counts in the totals, by its
   sign (see below).
+- **Budgets** are planned amounts for one category, one month and one currency. The
+  amount is a positive magnitude: the category's kind says whether it is a spending
+  envelope or an income target, and a plan of zero or less is refused rather than
+  stored. One owner carries at most one budget per `(category, month, currency)`
+  tuple — the unique index that rejects a duplicate also lets the same category hold a
+  EUR plan and a USD plan at once. Amounts are never converted between currencies.
+- **Salary simulation** lives in the budget module and writes nothing by itself: one
+  hourly rate per owner, and one `WorkDay` per clicked day whose status is the level
+  reached — `PLANNED` feeds the simulated budget, `WORKED` the amount really earned, and a
+  third click removes the row. The rate is the only stored figure; the day, week and month
+  equivalents shown next to it are derived from the configured day length and a 5-day
+  week (`salaryEquivalents`). Booking is a deliberate, separate click: it creates one
+  INCOME transaction for the month (amount recomputed from the `WORKED` days, category
+  « Salaire » created when missing, stable reference `salary:YYYY-MM` so a month cannot
+  be booked twice). Until that click the simulated amounts stay out of the totals.
 
 ## Documented indicator definitions
 
@@ -113,6 +128,18 @@ asked for: a cascade here would silently change what a property is worth.
   counts by its sign: recording both legs of one internal transfer leaves the net
   unchanged, while a single leg (money sent to savings, whose destination is not tracked)
   lowers it.
+- Salary simulation (budget page, « Salaire » tab) — a planning view whose figures are
+  only written into the accounts through the explicit booking button. A day clicked once
+  is `PLANNED`, clicked twice `WORKED`, a third click removes it; the two states are
+  disjoint, so no day counts twice:
+  - *planned* — sum of the hours of `PLANNED` days × the hourly rate.
+  - *worked* — sum of the hours of `WORKED` days × the hourly rate.
+  - *total simulated* — planned + worked.
+  - *equivalents* — day = rate × configured hours per day; week = day × 5 working days;
+    month = week × 52/12. Displayed for information only, never stored.
+  - *booking* — one INCOME transaction per month, labelled « Salaire {mois} », category
+    « Salaire » (created when missing), amount = the month's worked amount. The unique
+    `(account, externalRef = salary:YYYY-MM)` refuses a second booking of the month.
 - Property totals — each cashflow entry counts once. When an entry is linked to
   a transaction, the transaction is the only source of the amount.
 - GitHub issues — only **open** issues and pull requests are kept, and only the

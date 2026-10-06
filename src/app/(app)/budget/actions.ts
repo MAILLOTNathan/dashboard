@@ -3,32 +3,63 @@
 import { revalidatePath } from "next/cache";
 import {
   invalidResult,
+  isUniqueConstraintError,
   rejectedResult,
   unexpectedResult,
   type ActionResult,
 } from "@/lib/actions";
 import { requireUser } from "@/lib/auth/guard";
+import { formatMonthLabel, monthRange } from "@/lib/dates";
 import { recordIdInput } from "@/lib/validation";
 import {
   accountInputSchema,
   assertAmountMatchesType,
+  budgetInputSchema,
+  budgetUpdateSchema,
   categoryInputSchema,
   categoryMismatchReason,
+  DUPLICATE_BUDGET_MESSAGE,
   transactionFormSchema,
   transactionUpdateSchema,
   type AccountSummary,
   type CategorySummary,
+  type ValidatedBudgetInput,
   type ValidatedTransactionForm,
 } from "@/modules/budget/domain";
 import {
   createAccount,
+  createBudget,
   createCategory,
   createTransaction,
+  createWorkDay,
+  deleteBudget,
   deleteTransaction,
+  deleteWorkDay,
+  ensureCategory,
   findAccount,
+  findBudgetByPeriod,
   findCategory,
+  findSalarySetting,
+  findTransactionByExternalRef,
+  findWorkDay,
+  listWorkDays,
+  updateBudget,
   updateTransaction,
+  updateWorkDay,
+  upsertSalarySetting,
 } from "@/modules/budget/repository";
+import {
+  adjustWorkDayHours,
+  computeSalarySummary,
+  DUPLICATE_SALARY_BOOKING_MESSAGE,
+  nextWorkDayState,
+  SALARY_CATEGORY_NAME,
+  salaryBookingInputSchema,
+  salaryBookingRef,
+  salarySettingInputSchema,
+  workDayHoursInputSchema,
+  workDayInputSchema,
+} from "@/modules/budget/salary";
 import { findCashflowLinkedToTransaction } from "@/modules/real-estate/repository";
 
 /**
@@ -257,6 +288,356 @@ export async function deleteTransactionAction(values: unknown): Promise<ActionRe
     }
   } catch (error) {
     return unexpectedResult("deleteTransaction", error);
+  }
+
+  revalidatePath("/budget");
+  revalidatePath("/dashboard");
+  return { status: "ok" };
+}
+
+/**
+ * Validation shared by the creation and the edition of a budget.
+ *
+ * Two things must hold before anything is written: the category belongs to the owner,
+ * and the (category, month, currency) period is still free. `excludeBudgetId` keeps an
+ * edition's own row out of the duplicate check, so correcting only the amount is not a
+ * collision with itself.
+ *
+ * The pre-check is not a race guard: two requests can cross between the read and the
+ * write, and the unique index is what refuses the second one. It is there so the
+ * ordinary duplicate arrives as a readable field error without a database exception.
+ */
+async function resolveBudgetInput(
+  userId: string,
+  input: ValidatedBudgetInput,
+  options: { excludeBudgetId?: string } = {},
+): Promise<{ ok: true; category: CategorySummary } | { ok: false; result: ActionResult }> {
+  const category = await findCategory(userId, input.categoryId);
+  if (!category) {
+    return { ok: false, result: rejectedResult("categoryId", "Catégorie introuvable.") };
+  }
+
+  const duplicate = await findBudgetByPeriod(userId, {
+    categoryId: category.id,
+    year: input.month.year,
+    month: input.month.month,
+    currency: input.currency,
+  });
+
+  if (duplicate && duplicate.id !== options.excludeBudgetId) {
+    return { ok: false, result: rejectedResult("categoryId", DUPLICATE_BUDGET_MESSAGE) };
+  }
+
+  return { ok: true, category };
+}
+
+export async function createBudgetAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = budgetInputSchema.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  const input = parsed.data;
+
+  const resolved = await resolveBudgetInput(user.id, input);
+  if (!resolved.ok) {
+    return resolved.result;
+  }
+
+  try {
+    await createBudget({
+      userId: user.id,
+      categoryId: resolved.category.id,
+      year: input.month.year,
+      month: input.month.month,
+      currency: input.currency,
+      amount: input.amount,
+    });
+  } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      return rejectedResult("categoryId", DUPLICATE_BUDGET_MESSAGE);
+    }
+
+    return unexpectedResult("createBudget", error);
+  }
+
+  revalidatePath("/budget");
+  return { status: "ok" };
+}
+
+/** Edits one monthly budget in place; same rules as the creation. */
+export async function updateBudgetAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = budgetUpdateSchema.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  const input = parsed.data;
+
+  const resolved = await resolveBudgetInput(user.id, input, { excludeBudgetId: input.id });
+  if (!resolved.ok) {
+    return resolved.result;
+  }
+
+  try {
+    const updated = await updateBudget(user.id, input.id, {
+      categoryId: resolved.category.id,
+      year: input.month.year,
+      month: input.month.month,
+      currency: input.currency,
+      amount: input.amount,
+    });
+
+    if (!updated) {
+      return rejectedResult(
+        "id",
+        "Budget introuvable : il a peut-être été supprimé entre-temps.",
+      );
+    }
+  } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      return rejectedResult("categoryId", DUPLICATE_BUDGET_MESSAGE);
+    }
+
+    return unexpectedResult("updateBudget", error);
+  }
+
+  revalidatePath("/budget");
+  return { status: "ok" };
+}
+
+/** Removes one monthly budget. The two-step confirmation lives in the client component. */
+export async function deleteBudgetAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = recordIdInput.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  try {
+    const deleted = await deleteBudget(user.id, parsed.data.id);
+    if (!deleted) {
+      return rejectedResult("id", "Budget introuvable : il a peut-être déjà été supprimé.");
+    }
+  } catch (error) {
+    return unexpectedResult("deleteBudget", error);
+  }
+
+  revalidatePath("/budget");
+  return { status: "ok" };
+}
+
+/**
+ * Saves the owner's hourly rate and default day length.
+ *
+ * One setting per owner: the form creates it on first use and replaces it afterwards.
+ * Only the rate is stored — the weekly and monthly figures shown next to it are derived
+ * at render time (see `salaryEquivalents`).
+ */
+export async function saveSalarySettingAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = salarySettingInputSchema.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  try {
+    await upsertSalarySetting({
+      userId: user.id,
+      hourlyRate: parsed.data.hourlyRate,
+      hoursPerDay: parsed.data.hoursPerDay,
+      currency: parsed.data.currency,
+    });
+  } catch (error) {
+    return unexpectedResult("saveSalarySetting", error);
+  }
+
+  revalidatePath("/budget");
+  return { status: "ok" };
+}
+
+/**
+ * One click on the salary calendar.
+ *
+ * The cycle is the feature: the first click plans the day with the configured day
+ * length, the second marks it really worked, the third removes it. The current state is
+ * read here rather than accepted from the browser, so a replayed payload cannot skip a
+ * level; the unique constraint on (owner, date) keeps a crossed request from creating
+ * two rows.
+ */
+export async function cycleWorkDayAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = workDayInputSchema.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  const date = parsed.data.date;
+
+  try {
+    const [setting, current] = await Promise.all([
+      findSalarySetting(user.id),
+      findWorkDay(user.id, date),
+    ]);
+
+    if (!setting) {
+      return rejectedResult(
+        "date",
+        "Renseignez d'abord votre taux horaire : il transforme les heures cliquées en montants.",
+      );
+    }
+
+    const next = nextWorkDayState(current?.status ?? null);
+
+    if (next === "REMOVE") {
+      await deleteWorkDay(user.id, date);
+    } else if (current === null) {
+      await createWorkDay({
+        userId: user.id,
+        date,
+        status: next,
+        // The configured day length is copied onto the day: editing the setting later
+        // must not rewrite days that were already planned.
+        hours: setting.hoursPerDay,
+      });
+    } else {
+      await updateWorkDay(user.id, date, { status: next });
+    }
+  } catch (error) {
+    return unexpectedResult("cycleWorkDay", error);
+  }
+
+  revalidatePath("/budget");
+  return { status: "ok" };
+}
+
+/** Half-hour adjustment of one planned or worked day. */
+export async function adjustWorkDayHoursAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = workDayHoursInputSchema.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  const { date, direction } = parsed.data;
+
+  try {
+    const current = await findWorkDay(user.id, date);
+    if (!current) {
+      return rejectedResult("date", "Ce jour n'est plus dans le calendrier : rechargez la page.");
+    }
+
+    const nextHours = adjustWorkDayHours(current.hours, direction);
+    // At a bound the value does not move: no write, but still a success, so a button
+    // that has nothing left to do never looks like an error.
+    if (!nextHours.equals(current.hours)) {
+      await updateWorkDay(user.id, date, { hours: nextHours });
+    }
+  } catch (error) {
+    return unexpectedResult("adjustWorkDayHours", error);
+  }
+
+  revalidatePath("/budget");
+  return { status: "ok" };
+}
+
+/**
+ * Turns the month's worked hours into one real income entry.
+ *
+ * The booking is the only way the simulation writes into the accounts, and it does so on
+ * the owner's explicit click: the amount is recomputed here from the month's `WORKED`
+ * days (never taken from the browser), the account must be in the salary currency (no
+ * conversion), and the « Salaire » category is created if the owner never made one. The
+ * entry carries a stable import reference (`salary:2026-10`), so the unique constraint
+ * makes a second attempt for the same month fail instead of silently doubling the
+ * income; the pre-check lets the tab show the recorded entry instead of the button.
+ */
+export async function bookSalaryAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = salaryBookingInputSchema.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  const { month, accountId, date } = parsed.data;
+
+  try {
+    const [setting, account] = await Promise.all([
+      findSalarySetting(user.id),
+      findAccount(user.id, accountId),
+    ]);
+
+    if (!setting) {
+      return rejectedResult(
+        "accountId",
+        "Renseignez d'abord votre taux horaire : il transforme les heures en montants.",
+      );
+    }
+
+    if (!account) {
+      return rejectedResult("accountId", "Compte introuvable.");
+    }
+
+    if (account.currency !== setting.currency) {
+      return rejectedResult(
+        "accountId",
+        `Le salaire est en ${setting.currency} : choisissez un compte dans cette devise, aucune conversion n'est faite.`,
+      );
+    }
+
+    const reference = salaryBookingRef(month.year, month.month);
+    const existing = await findTransactionByExternalRef(user.id, reference);
+    if (existing) {
+      return rejectedResult("accountId", DUPLICATE_SALARY_BOOKING_MESSAGE);
+    }
+
+    const range = monthRange(month.year, month.month);
+    const workDays = await listWorkDays(user.id, { from: range.start, to: range.end });
+    const summary = computeSalarySummary(workDays, setting.hourlyRate);
+
+    if (summary.workedAmount.isZero()) {
+      return rejectedResult(
+        "date",
+        "Aucune heure marquée travaillée sur ce mois : il n'y a rien à enregistrer.",
+      );
+    }
+
+    const category = await ensureCategory({
+      userId: user.id,
+      name: SALARY_CATEGORY_NAME,
+      kind: "INCOME",
+    });
+
+    await createTransaction({
+      userId: user.id,
+      accountId: account.id,
+      categoryId: category.id,
+      type: "INCOME",
+      // Worked hours × rate, positive: the sign rule for an income holds.
+      label: `Salaire ${formatMonthLabel(month.year, month.month)}`,
+      amount: summary.workedAmount,
+      currency: account.currency,
+      operationDate: date,
+      notes: null,
+      externalRef: reference,
+    });
+  } catch (error) {
+    // The unique index is the race guard for two clicks crossing between the pre-check
+    // and the write; it answers with the same message as the pre-check.
+    if (isUniqueConstraintError(error)) {
+      return rejectedResult("accountId", DUPLICATE_SALARY_BOOKING_MESSAGE);
+    }
+
+    return unexpectedResult("bookSalary", error);
   }
 
   revalidatePath("/budget");

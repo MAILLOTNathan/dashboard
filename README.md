@@ -19,9 +19,15 @@ Working today:
 - Personal budget: accounts, categories, transactions entered from the budget
   page, monthly totals per currency, filters, CSV export, deletion with confirmation,
   correction of an existing operation (the row reopens in the entry form, filters kept)
-  and two charts (a 12-month trend and the month's spending per category). Submitted
-  values stay in the transaction and cashflow forms, so a second line is a small edit;
-  the one-shot forms (account, category, property, password) clear themselves.
+  and two charts (a 12-month trend and the month's spending per category). Monthly
+  budgets per category and currency complete the picture: a positive planned amount,
+  duplicates for the same month refused, currencies kept separate with no conversion.
+  A **Salaire** tab simulates earnings from an hourly rate: one click on the calendar
+  plans a day, a second marks it really worked, a third clears it. A booking button
+  records the month's worked amount as one income entry, in a default « Salaire »
+  category — nothing is written before that click.
+  Submitted values stay in the transaction and cashflow forms, so a second line is a
+  small edit; the one-shot forms (account, category, property, password) clear themselves.
 - Real estate: properties and cashflow entries entered from the real-estate
   page, occupancy status, totals, due dates.
 - GitHub / GitLab connections: read-only adapters, encrypted tokens, manual
@@ -34,10 +40,11 @@ Working today:
 
 Not implemented yet:
 
-- The budget view is a table, not an editable grid: correcting a line means reopening it
-  in the entry form, not typing in the cell. Only transactions can be edited — accounts,
-  categories and properties can still only be created, never modified.
-- Accounts, categories and properties cannot be deleted yet; only transactions can.
+- The budget view is a table, not an editable grid: correcting an operation means reopening it
+  in the entry form, not typing in the cell. Transactions and monthly budgets can be edited and
+  deleted; accounts, categories and properties can still only be created.
+- Accounts, categories and properties cannot be deleted yet; only transactions and
+  budgets can.
 - A scheduler entry point for automatic synchronisation (the function exists and
   is idempotent; the trigger is not shipped).
 - Bank connection, payments, accounting, tax advice — permanently out of scope.
