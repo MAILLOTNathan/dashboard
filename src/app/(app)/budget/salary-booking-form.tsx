@@ -11,13 +11,13 @@ import {
 import { bookSalaryAction } from "./actions";
 
 /**
- * Turns the month's worked hours into a real income entry.
+ * Turns the month's simulated hours into a real income entry.
  *
  * Only the account and the date are asked for: the amount is recomputed on the server
- * from the worked days, and the category (created when missing) and the import reference
- * are decided there too, so a replayed request can neither invent an amount nor record
- * the month twice. The amount is shown next to the account because booking a figure
- * should never be a blind click.
+ * from the clicked days (planned and worked, each counted once), and the category
+ * (created when missing) and the import reference are decided there too, so a replayed
+ * request can neither invent an amount nor record the month twice. The amount is shown
+ * next to the account because booking a figure should never be a blind click.
  */
 export function SalaryBookingForm({
   monthKey,
@@ -49,7 +49,7 @@ export function SalaryBookingForm({
         label="Compte à créditer"
         htmlFor="booking-account"
         error={errors.accountId?.message}
-        hint={`Montant enregistré : ${amountLabel}, calculé sur les heures confirmées du mois.`}
+        hint={`Montant enregistré : ${amountLabel}, calculé sur les jours cliqués du mois.`}
       >
         <select id="booking-account" className={inputClass} {...form.register("accountId")}>
           {accounts.map((account) => (
@@ -64,7 +64,7 @@ export function SalaryBookingForm({
         label="Date de l'opération"
         htmlFor="booking-date"
         error={errors.date?.message}
-        hint="Par défaut, le dernier jour confirmé travaillé."
+        hint="Par défaut, le dernier jour cliqué du mois."
       >
         <input id="booking-date" type="date" className={inputClass} {...form.register("date")} />
       </Field>

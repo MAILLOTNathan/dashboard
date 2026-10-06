@@ -1,8 +1,6 @@
 import type Decimal from "decimal.js";
-import Link from "next/link";
 import { Card, Notice, StatCard } from "@/components/ui";
 import {
-  formatDateOnly,
   formatMonthLabel,
   monthRange,
   parseMonthKey,
@@ -22,6 +20,7 @@ import {
   listAccounts,
   listWorkDays,
 } from "@/modules/budget/repository";
+import { RecordedSalaryNotice } from "./salary-booking-recorded";
 import { SalaryBookingForm } from "./salary-booking-form";
 import { SalaryForm } from "./salary-form";
 import { WorkCalendar, type WorkCalendarDay } from "./work-calendar";
@@ -89,7 +88,9 @@ export async function SalarySection({
   // Booking: only accounts in the salary currency are offered; the action refuses any
   // other rather than converting between currencies.
   const salaryAccounts = accounts.filter((account) => account.currency === currency);
-  const lastWorkedDay = [...workDays].reverse().find((day) => day.status === "WORKED");
+  // Default operation date: the last clicked day — the month is recorded as it stands,
+  // planned days included.
+  const lastClickedDay = workDays.length > 0 ? workDays[workDays.length - 1] : null;
 
   return (
     <Card
@@ -175,34 +176,18 @@ export async function SalarySection({
         <h3 className="text-sm font-medium">Enregistrer la recette du mois</h3>
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
           Crée une opération de recette, catégorie « {SALARY_CATEGORY_NAME} », avec le
-          montant des heures confirmées travaillées ce mois. Une seule recette par mois,
-          et jamais écrite sans ce clic.
+          montant simulé du mois : jours prévus et travaillés, chacun compté une fois.
+          Une seule recette par mois, et jamais écrite sans ce clic.
         </p>
 
         <div className="mt-3">
-          {summary.workedAmount.isZero() ? (
+          {summary.totalAmount.isZero() ? (
             <Notice tone="info">
-              Aucune heure marquée travaillée pour {formatMonthLabel(year, month)} :
-              confirmez au moins un jour (deuxième clic) pour pouvoir enregistrer la
-              recette.
+              Aucun jour cliqué pour {formatMonthLabel(year, month)} : planifiez au
+              moins un jour dans le calendrier pour pouvoir enregistrer la recette.
             </Notice>
           ) : booking ? (
-            <div className="flex flex-col items-start gap-2">
-              <Notice tone="info">
-                Recette déjà enregistrée :{" "}
-                {formatMoney({ amount: booking.amount, currency: booking.currency })} le{" "}
-                {formatDateOnly(booking.operationDate)}
-                {booking.accountName ? ` (${booking.accountName})` : ""}. Si les heures du
-                mois évoluent, corrigez l&apos;opération : cette recette ne se met pas à
-                jour toute seule.
-              </Notice>
-              <Link
-                href={`/budget?month=${monthKey}&tab=operations&edit=${booking.id}`}
-                className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
-              >
-                Corriger dans Opérations
-              </Link>
-            </div>
+            <RecordedSalaryNotice monthKey={monthKey} booking={booking} />
           ) : salaryAccounts.length === 0 ? (
             <Notice tone="warning">
               Aucun compte en {currency} : créez-en un dans l&apos;onglet Opérations pour
@@ -216,11 +201,11 @@ export async function SalarySection({
                 name: account.name,
               }))}
               defaultDate={
-                lastWorkedDay
-                  ? toDateOnlyString(lastWorkedDay.date)
+                lastClickedDay
+                  ? toDateOnlyString(lastClickedDay.date)
                   : toDateOnlyString(new Date())
               }
-              amountLabel={formatMoney({ amount: summary.workedAmount, currency })}
+              amountLabel={formatMoney({ amount: summary.totalAmount, currency })}
             />
           )}
         </div>

@@ -14,6 +14,8 @@ export const BUDGET_TABS = [
   { id: "analysis", label: "Analyse" },
   { id: "budgets", label: "Budgets" },
   { id: "report", label: "Suivi" },
+  { id: "forecast", label: "Prévisions" },
+  { id: "goals", label: "Objectifs" },
   { id: "salary", label: "Salaire" },
 ] as const;
 
@@ -23,19 +25,24 @@ export type BudgetTab = (typeof BUDGET_TABS)[number]["id"];
  * Which tab to display.
  *
  * An explicit, valid `?tab=` wins. Otherwise an edition link decides: `?editBudget=`
- * belongs to the budgets tab, and everything else — including `?edit=` — lands on
- * operations, so links written before the tabs existed keep working.
+ * belongs to the budgets tab, `?editGoal=` to the goals tab, and everything else —
+ * including `?edit=` — lands on operations, so links written before the tabs existed
+ * keep working.
  */
 export function resolveBudgetTab(
   requested: string | undefined,
-  options: { editBudgetId?: string } = {},
+  options: { editBudgetId?: string; editGoalId?: string } = {},
 ): BudgetTab {
   const explicit = BUDGET_TABS.find((tab) => tab.id === requested);
   if (explicit) {
     return explicit.id;
   }
 
-  return options.editBudgetId ? "budgets" : "operations";
+  if (options.editBudgetId) {
+    return "budgets";
+  }
+
+  return options.editGoalId ? "goals" : "operations";
 }
 
 /**

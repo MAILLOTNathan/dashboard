@@ -948,7 +948,7 @@ describe("bookSalaryAction", () => {
     revalidatePathMock.mockReset();
   });
 
-  it("books the worked amount as an income in the « Salaire » category", async () => {
+  it("books the month's simulated amount as an income in the « Salaire » category", async () => {
     const result = await bookSalaryAction(BOOKING);
 
     expect(result).toEqual({ status: "ok" });
@@ -973,17 +973,33 @@ describe("bookSalaryAction", () => {
       // The stable reference is what makes a second booking of the month impossible.
       externalRef: "salary:2026-10",
     });
-    // 8 worked hours × 20.50: the planned day is not booked.
-    expect((input.amount as { toFixed(scale: number): string }).toFixed(2)).toBe("164.00");
+    // 15.5 clicked hours × 20.50: the planned day counts too, exactly once.
+    expect((input.amount as { toFixed(scale: number): string }).toFixed(2)).toBe("317.75");
     expect((input.operationDate as Date).toISOString()).toBe("2026-10-31T00:00:00.000Z");
     expect(revalidatePathMock).toHaveBeenCalledWith("/budget");
     expect(revalidatePathMock).toHaveBeenCalledWith("/dashboard");
   });
 
-  it("refuses a month without a worked day", async () => {
+  it("books a month that is only planned: the calendar is the source, not the day states", async () => {
     listWorkDaysMock.mockResolvedValue([
-      { date: WORK_DATE, status: "PLANNED", hours: new Decimal("7.5") },
+      { date: WORK_DATE, status: "PLANNED", hours: new Decimal("8") },
+      {
+        date: new Date("2026-10-06T00:00:00.000Z"),
+        status: "PLANNED",
+        hours: new Decimal("7.5"),
+      },
     ]);
+
+    const result = await bookSalaryAction(BOOKING);
+
+    expect(result).toEqual({ status: "ok" });
+    const [input] = createTransactionMock.mock.calls[0] as [Record<string, unknown>];
+    // 15.5 planned hours × 20.50 — a planned day counts once, like a worked one.
+    expect((input.amount as { toFixed(scale: number): string }).toFixed(2)).toBe("317.75");
+  });
+
+  it("refuses a month without a single clicked day", async () => {
+    listWorkDaysMock.mockResolvedValue([]);
 
     const result = await bookSalaryAction(BOOKING);
 

@@ -1,0 +1,538 @@
+import Link from "next/link";
+import {
+  Badge,
+  Card,
+  Notice,
+  StatCard,
+  TableShell,
+  tdClass,
+  thClass,
+} from "@/components/ui";
+import { formatDateOnly, formatInstant, formatMonthLabel, monthRange, parseMonthKey, toDateOnlyString } from "@/lib/dates";
+import { DEFAULT_CURRENCY, formatMoney } from "@/lib/money";
+import {
+  ensureRecurringOccurrences,
+  findSalarySetting,
+  findTransactionByExternalRef,
+  listAccounts,
+  listCategories,
+  listRecurringEntries,
+  listRecurringOccurrences,
+  listWorkDays,
+} from "@/modules/budget/repository";
+import {
+  OCCURRENCE_STATUS_LABELS,
+  signedForecastAmount,
+  summariseForecastMonth,
+  type ForecastContribution,
+  type ForecastType,
+  type RecurringOccurrenceStatus,
+} from "@/modules/budget/recurrence";
+import { computeSalarySummary, SALARY_CATEGORY_NAME, salaryBookingRef } from "@/modules/budget/salary";
+import { DeleteRecurringButton } from "./delete-recurring-button";
+import { OccurrenceActions } from "./occurrence-actions";
+import { RecurringEntryForm } from "./recurring-entry-form";
+import { SalaryBookingRow } from "./salary-booking-row";
+
+const TYPE_LABELS: Record<ForecastType, string> = {
+  INCOME: "Recette",
+  EXPENSE: "Dépense",
+};
+
+const STATUS_TONES: Record<
+  RecurringOccurrenceStatus,
+  "neutral" | "positive" | "warning"
+> = {
+  PENDING: "neutral",
+  CONFIRMED: "positive",
+  SKIPPED: "neutral",
+  DISMISSED: "neutral",
+};
+
+/**
+ * "Prévisions" tab: the month's expected occurrences, and the series that produce them.
+ *
+ * Opening the month materialises its occurrences, idempotently: the unique
+ * (recurringId, date) plus `skipDuplicates` make the write safe to repeat, and a
+ * decided occurrence keeps its row, so it is never offered twice. Nothing here counts
+ * in a total until it is confirmed — confirming goes through the very same creation
+ * path as a manual entry; passing or discarding writes a decision and no transaction.
+ * The month's salary prévision is computed from the simulator instead of being stored:
+ * it follows the calendar day by day, and recording it calls the same booking action as
+ * the Salaire tab, so the two can never disagree.
+ */
+export async function ForecastSection({
+  userId,
+  monthKey,
+}: {
+  userId: string;
+  /** `YYYY-MM`, the month shared by every tab. */
+  monthKey: string;
+}) {
+  const { year, month } = parseMonthKey(monthKey);
+  const range = monthRange(year, month);
+  const monthLabel = formatMonthLabel(year, month);
+
+  await ensureRecurringOccurrences(userId, year, month);
+
+  const [entries, occurrences, accounts, categories, salarySetting, workDays, salaryBooking] =
+    await Promise.all([
+      listRecurringEntries(userId),
+      listRecurringOccurrences(userId, { from: range.start, to: range.end }),
+      listAccounts(userId),
+      listCategories(userId),
+      findSalarySetting(userId),
+      // The month's calendar, read exactly like the Salaire tab reads it: the prévision
+      // and the booking recompute the same figures from the same rows.
+      listWorkDays(userId, { from: range.start, to: range.end }),
+      findTransactionByExternalRef(userId, salaryBookingRef(year, month)),
+    ]);
+
+  const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+  const currencyByAccount = new Map(accounts.map((account) => [account.id, account.currency]));
+  const pending = occurrences.filter((occurrence) => occurrence.status === "PENDING");
+  const decided = occurrences.filter((occurrence) => occurrence.status !== "PENDING");
+
+  // Salary prévision: computed from the simulator, never stored — it follows the
+  // calendar and becomes the first row of the month's échéances while it is not
+  // registered yet.
+  const salarySummary = salarySetting
+    ? computeSalarySummary(workDays, salarySetting.hourlyRate)
+    : null;
+  const salaryAccounts = salarySetting
+    ? accounts.filter((account) => account.currency === salarySetting.currency)
+    : [];
+  const workedDayCount = workDays.filter((day) => day.status === "WORKED").length;
+  const lastClickedDay = workDays.length > 0 ? workDays[workDays.length - 1] : null;
+  const salaryPending =
+    salarySetting !== null && salaryBooking === null && lastClickedDay !== null;
+
+  // The month's prévisionnel: every expected movement, whatever its source — the series
+  // échéances and the salary prévision. Confirmed ones count (a prévision that came
+  // true), passed and dismissed ones do not; the domain rule decides, here we only
+  // hand in the contributions.
+  const contributions: ForecastContribution[] = [];
+  for (const occurrence of occurrences) {
+    const entry = entriesById.get(occurrence.recurringId);
+    if (!entry) {
+      continue;
+    }
+    contributions.push({
+      currency: currencyByAccount.get(entry.accountId) ?? DEFAULT_CURRENCY,
+      type: entry.type,
+      amount: entry.amount,
+      status: occurrence.status,
+    });
+  }
+
+  if (salarySetting) {
+    if (salaryBooking) {
+      // Registered: the amount that will really land, not a fresh simulation.
+      contributions.push({
+        currency: salaryBooking.currency,
+        type: "INCOME",
+        amount: salaryBooking.amount,
+        status: "CONFIRMED",
+      });
+    } else if (salarySummary && lastClickedDay) {
+      contributions.push({
+        currency: salarySetting.currency,
+        type: "INCOME",
+        amount: salarySummary.totalAmount,
+        status: "PENDING",
+      });
+    }
+  }
+
+  const forecastTotals = summariseForecastMonth(contributions);
+
+  // "Today" is the UTC calendar day, like every date-only value in the project: marking
+  // an occurrence late cannot shift because of a display time zone.
+  const now = new Date();
+  const todayUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+
+  return (
+    <>
+      <Card
+        title={`Échéances — ${monthLabel}`}
+        description="Une échéance ne compte dans aucun total tant qu'elle n'est pas confirmée : confirmer crée l'opération dans le mois, passer ou écarter enregistre une décision sans aucune écriture."
+      >
+        <form method="get" action="/budget" className="mb-4 flex flex-wrap items-end gap-2">
+          <input type="hidden" name="tab" value="forecast" />
+
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="font-medium">Mois affiché</span>
+            <input
+              type="month"
+              name="month"
+              defaultValue={monthKey}
+              className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-900"
+            />
+          </label>
+
+          <button
+            type="submit"
+            className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white dark:bg-zinc-100 dark:text-zinc-900"
+          >
+            Afficher
+          </button>
+        </form>
+
+        {forecastTotals.length > 0 ? (
+          <div className="mb-4 flex flex-col gap-2">
+            <div className="grid gap-3 sm:grid-cols-3">
+              {forecastTotals.map((totals) => (
+                <div key={totals.currency} className="contents">
+                  <StatCard
+                    label={`Recettes prévues (${totals.currency})`}
+                    value={formatMoney({ amount: totals.income, currency: totals.currency })}
+                  />
+                  <StatCard
+                    label={`Dépenses prévues (${totals.currency})`}
+                    value={formatMoney({ amount: totals.expenses, currency: totals.currency })}
+                  />
+                  <StatCard
+                    label={`Solde prévisionnel (${totals.currency})`}
+                    value={formatMoney({ amount: totals.net, currency: totals.currency })}
+                    tone={totals.net.isNegative() ? "negative" : "positive"}
+                    hint={`${totals.count} mouvement${totals.count > 1 ? "s" : ""} attendu${totals.count > 1 ? "s" : ""}${
+                      totals.confirmedCount > 0
+                        ? `, dont ${totals.confirmedCount} confirmé${totals.confirmedCount > 1 ? "s" : ""}`
+                        : ""
+                    }.`}
+                  />
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              Prévisionnel du mois : échéances des séries et salaire simulé, confirmés
+              compris ; passés et écartés exclus. Aucune devise n&apos;est convertie —
+              seules les opérations enregistrées entrent dans les totaux réels.
+            </p>
+          </div>
+        ) : null}
+
+        {pending.length === 0 && !salaryPending ? (
+          <Notice tone="info">
+            {entries.length === 0
+              ? `Aucune série n'est définie : les échéances de ${monthLabel} apparaîtront ici dès qu'une série existera, ci-dessous.`
+              : `Aucune échéance à traiter en ${monthLabel} : les séries ne couvrent pas ce mois, ou toutes ses échéances ont déjà reçu une décision.`}
+          </Notice>
+        ) : (
+          <TableShell caption={`Échéances à traiter — ${monthLabel}`}>
+            <thead>
+              <tr>
+                <th scope="col" className={thClass}>
+                  Date
+                </th>
+                <th scope="col" className={thClass}>
+                  Libellé
+                </th>
+                <th scope="col" className={thClass}>
+                  Nature
+                </th>
+                <th scope="col" className={thClass}>
+                  Compte
+                </th>
+                <th scope="col" className={thClass}>
+                  Catégorie
+                </th>
+                <th scope="col" className={`${thClass} text-right`}>
+                  Montant
+                </th>
+                <th scope="col" className={thClass}>
+                  Décision
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {salaryPending && salarySetting && salarySummary && lastClickedDay ? (
+                <tr>
+                  <td className={`${tdClass} whitespace-nowrap`}>
+                    {formatDateOnly(lastClickedDay.date)}
+                  </td>
+                  <td className={tdClass}>
+                    {SALARY_CATEGORY_NAME}
+                    <span className="block text-xs text-zinc-500 dark:text-zinc-400">
+                      Simulé : {workDays.length} jour
+                      {workDays.length > 1 ? "s" : ""} cliqué
+                      {workDays.length > 1 ? "s" : ""}
+                      {workedDayCount > 0
+                        ? `, dont ${workedDayCount} travaillé${workedDayCount > 1 ? "s" : ""}`
+                        : ""}
+                    </span>
+                  </td>
+                  <td className={tdClass}>Recette</td>
+                  <td className={tdClass}>{salaryAccounts[0]?.name ?? "—"}</td>
+                  <td className={tdClass}>{SALARY_CATEGORY_NAME}</td>
+                  <td className={`${tdClass} whitespace-nowrap text-right tabular-nums`}>
+                    {formatMoney({
+                      amount: salarySummary.totalAmount,
+                      currency: salarySetting.currency,
+                    })}
+                  </td>
+                  <td className={tdClass}>
+                    {salaryAccounts.length === 0 ? (
+                      <span className="text-xs text-amber-700 dark:text-amber-300">
+                        Aucun compte en {salarySetting.currency} : créez-en un dans
+                        l&apos;onglet Opérations pour enregistrer la recette.
+                      </span>
+                    ) : (
+                      <SalaryBookingRow
+                        monthKey={monthKey}
+                        accounts={salaryAccounts.map((account) => ({
+                          id: account.id,
+                          name: account.name,
+                        }))}
+                        defaultDate={toDateOnlyString(lastClickedDay.date)}
+                      />
+                    )}
+                  </td>
+                </tr>
+              ) : null}
+
+              {pending.map((occurrence) => {
+                const entry = entriesById.get(occurrence.recurringId);
+                if (!entry) {
+                  // Unreachable in practice: a series is kept while one of its
+                  // occurrences carries a decision, and a pending one is waiting for
+                  // exactly that. Rendering nothing beats inventing a row.
+                  return null;
+                }
+
+                const currency = currencyByAccount.get(entry.accountId) ?? DEFAULT_CURRENCY;
+                const isLate = occurrence.date.getTime() < todayUTC;
+
+                return (
+                  <tr key={occurrence.id}>
+                    <td className={`${tdClass} whitespace-nowrap`}>
+                      {formatDateOnly(occurrence.date)}{" "}
+                      {isLate ? <Badge tone="warning">En retard</Badge> : null}
+                    </td>
+                    <td className={tdClass}>{entry.label}</td>
+                    <td className={tdClass}>{TYPE_LABELS[entry.type]}</td>
+                    <td className={tdClass}>{entry.accountName}</td>
+                    <td className={tdClass}>{entry.categoryName ?? "Sans catégorie"}</td>
+                    <td className={`${tdClass} whitespace-nowrap text-right tabular-nums`}>
+                      {formatMoney({ amount: signedForecastAmount(entry.type, entry.amount), currency })}
+                    </td>
+                    <td className={tdClass}>
+                      <OccurrenceActions occurrenceId={occurrence.id} label={entry.label} />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </TableShell>
+        )}
+
+        {salarySetting && salaryBooking === null && lastClickedDay === null ? (
+          <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+            Salaire — aucun jour cliqué en {monthLabel} : la prévision apparaîtra ici dès
+            qu&apos;une journée sera planifiée.{" "}
+            <Link
+              href={`/budget?month=${monthKey}&tab=salary`}
+              className="underline underline-offset-2"
+            >
+              Planifier dans Salaire
+            </Link>
+            .
+          </p>
+        ) : null}
+
+        {decided.length > 0 || salaryBooking ? (
+          <div className="mt-6 flex flex-col gap-2">
+            <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
+              Décisions de {monthLabel}
+            </h3>
+
+            <TableShell caption={`Décisions — ${monthLabel}`}>
+              <thead>
+                <tr>
+                  <th scope="col" className={thClass}>
+                    Date
+                  </th>
+                  <th scope="col" className={thClass}>
+                    Libellé
+                  </th>
+                  <th scope="col" className={`${thClass} text-right`}>
+                    Montant
+                  </th>
+                  <th scope="col" className={thClass}>
+                    Décision
+                  </th>
+                  <th scope="col" className={thClass}>
+                    Décidé le
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {salaryBooking ? (
+                  <tr>
+                    <td className={`${tdClass} whitespace-nowrap`}>
+                      {formatDateOnly(salaryBooking.operationDate)}
+                    </td>
+                    <td className={tdClass}>
+                      {salaryBooking.label}
+                      {" — "}
+                      <Link
+                        href={`/budget?month=${monthKey}&tab=operations&edit=${salaryBooking.id}`}
+                        className="underline underline-offset-2"
+                      >
+                        voir l&apos;opération
+                      </Link>
+                    </td>
+                    <td className={`${tdClass} whitespace-nowrap text-right tabular-nums`}>
+                      {formatMoney({
+                        amount: salaryBooking.amount,
+                        currency: salaryBooking.currency,
+                      })}
+                    </td>
+                    <td className={tdClass}>
+                      <Badge tone="positive">Confirmée</Badge>
+                    </td>
+                    <td className={`${tdClass} whitespace-nowrap`}>
+                      {formatInstant(salaryBooking.createdAt)}
+                    </td>
+                  </tr>
+                ) : null}
+
+                {decided.map((occurrence) => {
+                  const entry = entriesById.get(occurrence.recurringId);
+                  if (!entry) {
+                    return null;
+                  }
+
+                  const currency = currencyByAccount.get(entry.accountId) ?? DEFAULT_CURRENCY;
+
+                  return (
+                    <tr key={occurrence.id}>
+                      <td className={`${tdClass} whitespace-nowrap`}>
+                        {formatDateOnly(occurrence.date)}
+                      </td>
+                      <td className={tdClass}>
+                        {entry.label}
+                        {occurrence.status === "CONFIRMED" && occurrence.transactionId ? (
+                          <>
+                            {" — "}
+                            <Link
+                              href={`/budget?month=${monthKey}&tab=operations&edit=${occurrence.transactionId}`}
+                              className="underline underline-offset-2"
+                            >
+                              voir l&apos;opération
+                            </Link>
+                          </>
+                        ) : null}
+                      </td>
+                      <td className={`${tdClass} whitespace-nowrap text-right tabular-nums`}>
+                        {formatMoney({ amount: signedForecastAmount(entry.type, entry.amount), currency })}
+                      </td>
+                      <td className={tdClass}>
+                        <Badge tone={STATUS_TONES[occurrence.status]}>
+                          {OCCURRENCE_STATUS_LABELS[occurrence.status]}
+                        </Badge>
+                      </td>
+                      <td className={`${tdClass} whitespace-nowrap`}>
+                        {occurrence.decidedAt ? formatInstant(occurrence.decidedAt) : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </TableShell>
+
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              Passée, écartée ou confirmée : chaque décision reste enregistrée avec sa
+              date, et ne se réécrit pas.
+            </p>
+          </div>
+        ) : null}
+      </Card>
+
+      <Card
+        title="Séries récurrentes"
+        description="Une série décrit une recette ou une dépense attendue — loyer, abonnement, salaire. Elle n'écrit rien dans le budget : chaque mois, elle alimente la liste des échéances à traiter, et le montant se confirme dans la devise du compte, sans conversion. Fréquence mensuelle."
+      >
+        <RecurringEntryForm
+          accounts={accounts}
+          categories={categories}
+          defaultStartDate={`${monthKey}-01`}
+        />
+
+        {entries.length === 0 ? (
+          <div className="mt-4">
+            <Notice tone="info">
+              Aucune série pour le moment : la première créée fera apparaître ses
+              échéances dans le mois affiché.
+            </Notice>
+          </div>
+        ) : (
+          <div className="mt-4">
+            <TableShell caption="Séries récurrentes">
+              <thead>
+                <tr>
+                  <th scope="col" className={thClass}>
+                    Libellé
+                  </th>
+                  <th scope="col" className={thClass}>
+                    Nature
+                  </th>
+                  <th scope="col" className={`${thClass} text-right`}>
+                    Montant
+                  </th>
+                  <th scope="col" className={thClass}>
+                    Compte
+                  </th>
+                  <th scope="col" className={thClass}>
+                    Catégorie
+                  </th>
+                  <th scope="col" className={thClass}>
+                    Début
+                  </th>
+                  <th scope="col" className={thClass}>
+                    Fin
+                  </th>
+                  <th scope="col" className={thClass}>
+                    Action
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {entries.map((entry) => {
+                  const currency = currencyByAccount.get(entry.accountId) ?? DEFAULT_CURRENCY;
+
+                  return (
+                    <tr key={entry.id}>
+                      <td className={tdClass}>{entry.label}</td>
+                      <td className={tdClass}>{TYPE_LABELS[entry.type]}</td>
+                      <td className={`${tdClass} whitespace-nowrap text-right tabular-nums`}>
+                        {formatMoney({ amount: signedForecastAmount(entry.type, entry.amount), currency })}
+                      </td>
+                      <td className={tdClass}>{entry.accountName}</td>
+                      <td className={tdClass}>{entry.categoryName ?? "Sans catégorie"}</td>
+                      <td className={`${tdClass} whitespace-nowrap`}>
+                        {formatDateOnly(entry.startDate)}
+                      </td>
+                      <td className={`${tdClass} whitespace-nowrap`}>
+                        {entry.endDate ? formatDateOnly(entry.endDate) : "—"}
+                      </td>
+                      <td className={tdClass}>
+                        <DeleteRecurringButton entryId={entry.id} label={entry.label} />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </TableShell>
+
+            <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+              Supprimer une série sans décision la retire avec ses échéances en attente ;
+              une série qui porte déjà des échéances traitées est conservée pour l&apos;audit
+              et s&apos;arrête par sa date de fin.
+            </p>
+          </div>
+        )}
+      </Card>
+    </>
+  );
+}

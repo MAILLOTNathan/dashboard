@@ -13,6 +13,15 @@ import type {
   TransactionType,
 } from "./domain";
 import type { SalarySettingRecord, WorkDayRecord, WorkDayStatus } from "./salary";
+import {
+  plannedOccurrences,
+  type ForecastType,
+  type RecurrenceFrequency,
+  type RecurringEntryRecord,
+  type RecurringOccurrenceRecord,
+  type RecurringOccurrenceStatus,
+} from "./recurrence";
+import type { GoalRecord, GoalStatus } from "./goals";
 import type { LabelUsage } from "./suggestions";
 
 /**
@@ -81,6 +90,7 @@ const TRANSACTION_SELECT = {
   categoryId: true,
   notes: true,
   externalRef: true,
+  createdAt: true,
   account: { select: { name: true } },
   category: { select: { name: true } },
 } as const;
@@ -97,6 +107,7 @@ type TransactionRow = {
   categoryId: string | null;
   notes: string | null;
   externalRef: string | null;
+  createdAt: Date;
   account: { name: string };
   category: { name: string } | null;
 };
@@ -117,6 +128,7 @@ function toTransactionRecord(row: TransactionRow): TransactionRecord {
     categoryName: row.category?.name ?? null,
     notes: row.notes,
     externalRef: row.externalRef,
+    createdAt: row.createdAt,
   };
 }
 
@@ -786,4 +798,416 @@ export async function deleteWorkDay(userId: string, date: Date): Promise<boolean
   const { count } = await getPrisma().workDay.deleteMany({ where: { userId, date } });
 
   return count === 1;
+}
+
+/**
+ * Recurring forecasts.
+ *
+ * Definitions describe series; occurrences are their materialised months. Every
+ * statement filters on `userId`, and the unique constraints hold the invariants at the
+ * database level too: one occurrence per (definition, date), one transaction per
+ * confirmation.
+ */
+
+const RECURRING_ENTRY_SELECT = {
+  id: true,
+  accountId: true,
+  account: { select: { name: true } },
+  categoryId: true,
+  category: { select: { name: true } },
+  type: true,
+  label: true,
+  amount: true,
+  frequency: true,
+  startDate: true,
+  endDate: true,
+} as const;
+
+/** Declared structurally, so the mapper does not depend on the generated client type. */
+type RecurringEntryRow = {
+  id: string;
+  accountId: string;
+  account: { name: string };
+  categoryId: string | null;
+  category: { name: string } | null;
+  type: string;
+  label: string;
+  amount: { toString(): string };
+  frequency: string;
+  startDate: Date;
+  endDate: Date | null;
+};
+
+function toRecurringEntryRecord(row: RecurringEntryRow): RecurringEntryRecord {
+  return {
+    id: row.id,
+    accountId: row.accountId,
+    accountName: row.account.name,
+    categoryId: row.categoryId,
+    categoryName: row.category?.name ?? null,
+    type: row.type as ForecastType,
+    label: row.label,
+    // Prisma exposes a numeric type: converting through its string form keeps the
+    // value exact and gives the domain a plain decimal.js instance.
+    amount: new Decimal(row.amount.toString()),
+    frequency: row.frequency as RecurrenceFrequency,
+    startDate: row.startDate,
+    endDate: row.endDate,
+  };
+}
+
+/** All the owner's definitions, oldest first, so the list reads like a register. */
+export async function listRecurringEntries(userId: string): Promise<RecurringEntryRecord[]> {
+  const rows = await getPrisma().recurringEntry.findMany({
+    where: { userId },
+    orderBy: [{ createdAt: "asc" }],
+    select: RECURRING_ENTRY_SELECT,
+  });
+
+  return rows.map(toRecurringEntryRecord);
+}
+
+/** One definition, scoped to its owner; `null` covers foreign and deleted alike. */
+export async function findRecurringEntry(
+  userId: string,
+  entryId: string,
+): Promise<RecurringEntryRecord | null> {
+  const row = await getPrisma().recurringEntry.findFirst({
+    where: { id: entryId, userId },
+    select: RECURRING_ENTRY_SELECT,
+  });
+
+  return row ? toRecurringEntryRecord(row) : null;
+}
+
+export async function createRecurringEntry(input: {
+  userId: string;
+  accountId: string;
+  categoryId: string | null;
+  type: ForecastType;
+  label: string;
+  amount: Decimal;
+  frequency: RecurrenceFrequency;
+  startDate: Date;
+  endDate: Date | null;
+}): Promise<{ id: string }> {
+  return getPrisma().recurringEntry.create({
+    data: {
+      userId: input.userId,
+      accountId: input.accountId,
+      categoryId: input.categoryId,
+      type: input.type,
+      label: input.label,
+      amount: input.amount.toFixed(2),
+      frequency: input.frequency,
+      startDate: input.startDate,
+      endDate: input.endDate,
+    },
+    select: { id: true },
+  });
+}
+
+/**
+ * How many occurrences of this definition already carry a decision.
+ *
+ * Deleting a definition is refused while one exists: a skipped or dismissed
+ * occurrence is an audit trail, and a confirmation holds the only link to its
+ * transaction. Stopping a series is `endDate`'s job, not deletion's.
+ */
+export async function countDecidedOccurrences(
+  userId: string,
+  recurringId: string,
+): Promise<number> {
+  return getPrisma().recurringOccurrence.count({
+    where: { userId, recurringId, status: { not: "PENDING" } },
+  });
+}
+
+/**
+ * Deletes one definition. Its *pending* occurrences go with it — they are its own
+ * future — while decided ones are protected by `countDecidedOccurrences`.
+ * `false` means "already gone or not yours".
+ */
+export async function deleteRecurringEntry(
+  userId: string,
+  entryId: string,
+): Promise<boolean> {
+  const { count } = await getPrisma().recurringEntry.deleteMany({
+    where: { id: entryId, userId },
+  });
+
+  return count === 1;
+}
+
+/**
+ * Materialises the month's occurrences for every definition, idempotently.
+ *
+ * `skipDuplicates` against the unique (recurringId, date) does the whole job: opening
+ * the same month twice creates nothing the second time, and a decided occurrence —
+ * which still holds its row — is never reset to pending. The dates come from the pure
+ * domain (`plannedOccurrences`), not from this layer.
+ */
+export async function ensureRecurringOccurrences(
+  userId: string,
+  year: number,
+  month: number,
+): Promise<void> {
+  const entries = await listRecurringEntries(userId);
+  const planned = plannedOccurrences(entries, year, month);
+
+  if (planned.length === 0) {
+    return;
+  }
+
+  await getPrisma().recurringOccurrence.createMany({
+    data: planned.map((occurrence) => ({
+      userId,
+      recurringId: occurrence.recurringId,
+      date: occurrence.date,
+    })),
+    skipDuplicates: true,
+  });
+}
+
+const RECURRING_OCCURRENCE_SELECT = {
+  id: true,
+  recurringId: true,
+  date: true,
+  status: true,
+  transactionId: true,
+  decidedAt: true,
+} as const;
+
+type RecurringOccurrenceRow = {
+  id: string;
+  recurringId: string;
+  date: Date;
+  status: string;
+  transactionId: string | null;
+  decidedAt: Date | null;
+};
+
+function toRecurringOccurrenceRecord(
+  row: RecurringOccurrenceRow,
+): RecurringOccurrenceRecord {
+  return {
+    id: row.id,
+    recurringId: row.recurringId,
+    date: row.date,
+    status: row.status as RecurringOccurrenceStatus,
+    transactionId: row.transactionId,
+    decidedAt: row.decidedAt,
+  };
+}
+
+/** The occurrences of a window, earliest first; the upper bound is exclusive. */
+export async function listRecurringOccurrences(
+  userId: string,
+  window: { from: Date; to: Date },
+): Promise<RecurringOccurrenceRecord[]> {
+  const rows = await getPrisma().recurringOccurrence.findMany({
+    where: { userId, date: { gte: window.from, lt: window.to } },
+    orderBy: [{ date: "asc" }, { createdAt: "asc" }],
+    select: RECURRING_OCCURRENCE_SELECT,
+  });
+
+  return rows.map(toRecurringOccurrenceRecord);
+}
+
+/** One occurrence, scoped to its owner. */
+export async function findRecurringOccurrence(
+  userId: string,
+  occurrenceId: string,
+): Promise<RecurringOccurrenceRecord | null> {
+  const row = await getPrisma().recurringOccurrence.findFirst({
+    where: { id: occurrenceId, userId },
+    select: RECURRING_OCCURRENCE_SELECT,
+  });
+
+  return row ? toRecurringOccurrenceRecord(row) : null;
+}
+
+/**
+ * Records the decision on one pending occurrence.
+ *
+ * The `PENDING` filter belongs in the `where` clause: a decision is terminal, and two
+ * crossed requests must not overwrite each other's state — the loser gets `false` and
+ * the action reports it instead of pretending. `transactionId` is only ever set by a
+ * confirmation.
+ */
+export async function decideRecurringOccurrence(
+  userId: string,
+  occurrenceId: string,
+  decision: {
+    status: Exclude<RecurringOccurrenceStatus, "PENDING">;
+    transactionId?: string;
+  },
+): Promise<boolean> {
+  const { count } = await getPrisma().recurringOccurrence.updateMany({
+    where: { id: occurrenceId, userId, status: "PENDING" },
+    data: {
+      status: decision.status,
+      transactionId: decision.transactionId ?? null,
+      decidedAt: new Date(),
+    },
+  });
+
+  return count === 1;
+}
+
+/**
+ * Goals (BP-04).
+ *
+ * A goal may link to one account, and every statement filters on the owner: a goal can
+ * never read — or point at — another owner's account. The balance of a linked account is
+ * the signed sum of its transactions, aggregated in the database rather than summed row
+ * by row: an account's balance reads its whole history.
+ */
+
+const GOAL_SELECT = {
+  id: true,
+  name: true,
+  targetAmount: true,
+  currency: true,
+  targetDate: true,
+  status: true,
+  currentAmount: true,
+  accountId: true,
+  account: { select: { name: true } },
+} as const;
+
+/** Declared structurally, so the mapper does not depend on the generated client type. */
+type GoalRow = {
+  id: string;
+  name: string;
+  targetAmount: { toString(): string };
+  currency: string;
+  targetDate: Date;
+  status: string;
+  currentAmount: { toString(): string } | null;
+  accountId: string | null;
+  account: { name: string } | null;
+};
+
+function toGoalRecord(row: GoalRow): GoalRecord {
+  return {
+    id: row.id,
+    name: row.name,
+    targetAmount: new Decimal(row.targetAmount.toString()),
+    currency: assertCurrency(row.currency),
+    targetDate: row.targetDate,
+    status: row.status as GoalStatus,
+    currentAmount:
+      row.currentAmount === null ? null : new Decimal(row.currentAmount.toString()),
+    accountId: row.accountId,
+    accountName: row.account?.name ?? null,
+  };
+}
+
+/** All the owner's goals, oldest first, so the list reads like a register. */
+export async function listGoals(userId: string): Promise<GoalRecord[]> {
+  const rows = await getPrisma().goal.findMany({
+    where: { userId },
+    orderBy: [{ createdAt: "asc" }],
+    select: GOAL_SELECT,
+  });
+
+  return rows.map(toGoalRecord);
+}
+
+/** One goal, scoped to its owner; `null` covers foreign and deleted alike. */
+export async function findGoal(userId: string, goalId: string): Promise<GoalRecord | null> {
+  const row = await getPrisma().goal.findFirst({
+    where: { id: goalId, userId },
+    select: GOAL_SELECT,
+  });
+
+  return row ? toGoalRecord(row) : null;
+}
+
+export async function createGoal(input: {
+  userId: string;
+  name: string;
+  targetAmount: Decimal;
+  currency: Currency;
+  targetDate: Date;
+  status: GoalStatus;
+  currentAmount: Decimal | null;
+  accountId: string | null;
+}): Promise<{ id: string }> {
+  return getPrisma().goal.create({
+    data: {
+      userId: input.userId,
+      name: input.name,
+      targetAmount: input.targetAmount.toFixed(2),
+      currency: input.currency,
+      targetDate: input.targetDate,
+      status: input.status,
+      currentAmount: input.currentAmount === null ? null : input.currentAmount.toFixed(2),
+      accountId: input.accountId,
+    },
+    select: { id: true },
+  });
+}
+
+/** Replaces the editable fields of one goal; `false` means "gone or not yours". */
+export async function updateGoal(
+  userId: string,
+  goalId: string,
+  input: {
+    name: string;
+    targetAmount: Decimal;
+    currency: Currency;
+    targetDate: Date;
+    status: GoalStatus;
+    currentAmount: Decimal | null;
+    accountId: string | null;
+  },
+): Promise<boolean> {
+  const { count } = await getPrisma().goal.updateMany({
+    where: { id: goalId, userId },
+    data: {
+      name: input.name,
+      targetAmount: input.targetAmount.toFixed(2),
+      currency: input.currency,
+      targetDate: input.targetDate,
+      status: input.status,
+      currentAmount: input.currentAmount === null ? null : input.currentAmount.toFixed(2),
+      accountId: input.accountId,
+    },
+  });
+
+  return count === 1;
+}
+
+/** Deletes one goal of this owner; `false` means "already gone or not yours". */
+export async function deleteGoal(userId: string, goalId: string): Promise<boolean> {
+  const { count } = await getPrisma().goal.deleteMany({ where: { id: goalId, userId } });
+
+  return count === 1;
+}
+
+/**
+ * The recorded balance of one account: the signed sum of its transactions.
+ *
+ * The count travels with the sum on purpose — the caller must be able to tell "an
+ * account whose movements net to zero" (a real 0,00 €) from "nothing recorded" (an
+ * unknown balance), two states the sum alone cannot distinguish.
+ */
+export async function readAccountBalance(
+  userId: string,
+  accountId: string,
+): Promise<{ transactionCount: number; balance: Decimal }> {
+  const result = await getPrisma().transaction.aggregate({
+    where: { userId, accountId },
+    _count: { _all: true },
+    _sum: { amount: true },
+  });
+
+  return {
+    transactionCount: result._count._all,
+    // Prisma types an aggregate as nullable; with no row the sum is zero, and the count
+    // is what the caller reads first.
+    balance: new Decimal(result._sum.amount?.toString() ?? "0"),
+  };
 }

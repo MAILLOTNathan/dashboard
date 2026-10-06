@@ -13,18 +13,14 @@ import { formatMonthLabel, monthRange } from "@/lib/dates";
 import { recordIdInput } from "@/lib/validation";
 import {
   accountInputSchema,
-  assertAmountMatchesType,
   budgetInputSchema,
   budgetUpdateSchema,
   categoryInputSchema,
-  categoryMismatchReason,
   DUPLICATE_BUDGET_MESSAGE,
   transactionFormSchema,
   transactionUpdateSchema,
-  type AccountSummary,
   type CategorySummary,
   type ValidatedBudgetInput,
-  type ValidatedTransactionForm,
 } from "@/modules/budget/domain";
 import {
   createAccount,
@@ -60,6 +56,7 @@ import {
   workDayHoursInputSchema,
   workDayInputSchema,
 } from "@/modules/budget/salary";
+import { resolveTransactionInput } from "@/modules/budget/transactions";
 import { findCashflowLinkedToTransaction } from "@/modules/real-estate/repository";
 
 /**
@@ -114,57 +111,6 @@ export async function createCategoryAction(values: unknown): Promise<ActionResul
 
   revalidatePath("/budget");
   return { status: "ok" };
-}
-
-/**
- * Validation shared by the creation and the edition of a transaction.
- *
- * The two write the same fields under the same rules, and letting them drift apart is
- * how an edition ends up accepting what a creation refuses. The owner identifier comes
- * from the session in both cases, never from the payload, so a replayed identifier
- * cannot point at somebody else's account.
- */
-async function resolveTransactionInput(
-  userId: string,
-  input: ValidatedTransactionForm,
-): Promise<{ ok: true; account: AccountSummary } | { ok: false; result: ActionResult }> {
-  // The account is owned by the user, and it is what determines the currency:
-  // the form deliberately carries no currency field.
-  const account = await findAccount(userId, input.accountId);
-  if (!account) {
-    return { ok: false, result: rejectedResult("accountId", "Compte introuvable.") };
-  }
-
-  // The form only offers categories of the matching kind, but a request body can be
-  // replayed by hand: the rule is enforced here too, or an expense would sit on an
-  // income category and be counted in the wrong place by every report.
-  const category: CategorySummary | null = input.categoryId
-    ? await findCategory(userId, input.categoryId)
-    : null;
-
-  if (input.categoryId && !category) {
-    return { ok: false, result: rejectedResult("categoryId", "Catégorie introuvable.") };
-  }
-
-  const categoryMismatch = categoryMismatchReason(input.type, category);
-  if (categoryMismatch) {
-    return { ok: false, result: rejectedResult("categoryId", categoryMismatch) };
-  }
-
-  // Refuses an income written as a negative amount: the sign carries the meaning.
-  try {
-    assertAmountMatchesType(input.amount, input.type);
-  } catch (error) {
-    return {
-      ok: false,
-      result: rejectedResult(
-        "amount",
-        error instanceof Error ? error.message : "Montant incohérent avec le type.",
-      ),
-    };
-  }
-
-  return { ok: true, account };
 }
 
 export async function createTransactionAction(values: unknown): Promise<ActionResult> {
@@ -550,15 +496,17 @@ export async function adjustWorkDayHoursAction(values: unknown): Promise<ActionR
 }
 
 /**
- * Turns the month's worked hours into one real income entry.
+ * Turns the month's simulated hours into one real income entry.
  *
  * The booking is the only way the simulation writes into the accounts, and it does so on
- * the owner's explicit click: the amount is recomputed here from the month's `WORKED`
- * days (never taken from the browser), the account must be in the salary currency (no
- * conversion), and the « Salaire » category is created if the owner never made one. The
- * entry carries a stable import reference (`salary:2026-10`), so the unique constraint
- * makes a second attempt for the same month fail instead of silently doubling the
- * income; the pre-check lets the tab show the recorded entry instead of the button.
+ * the owner's explicit click: the amount is recomputed here from the month's clicked days
+ * — planned and worked, each counted once (never taken from the browser) — the account
+ * must be in the salary currency (no conversion), and the « Salaire » category is created
+ * if the owner never made one. The Prévisions tab shows the same prévision and calls this
+ * same action, so both doors record the same figure. The entry carries a stable import
+ * reference (`salary:2026-10`), so the unique constraint makes a second attempt for the
+ * same month fail instead of silently doubling the income; the pre-check lets the tabs
+ * show the recorded entry instead of the button.
  */
 export async function bookSalaryAction(values: unknown): Promise<ActionResult> {
   const user = await requireUser();
@@ -604,10 +552,10 @@ export async function bookSalaryAction(values: unknown): Promise<ActionResult> {
     const workDays = await listWorkDays(user.id, { from: range.start, to: range.end });
     const summary = computeSalarySummary(workDays, setting.hourlyRate);
 
-    if (summary.workedAmount.isZero()) {
+    if (summary.totalAmount.isZero()) {
       return rejectedResult(
         "date",
-        "Aucune heure marquée travaillée sur ce mois : il n'y a rien à enregistrer.",
+        "Aucun jour cliqué sur ce mois : il n'y a rien à enregistrer.",
       );
     }
 
@@ -622,9 +570,10 @@ export async function bookSalaryAction(values: unknown): Promise<ActionResult> {
       accountId: account.id,
       categoryId: category.id,
       type: "INCOME",
-      // Worked hours × rate, positive: the sign rule for an income holds.
+      // Simulated hours × rate (planned + worked, each day once), positive: the sign
+      // rule for an income holds.
       label: `Salaire ${formatMonthLabel(month.year, month.month)}`,
-      amount: summary.workedAmount,
+      amount: summary.totalAmount,
       currency: account.currency,
       operationDate: date,
       notes: null,

@@ -50,6 +50,8 @@ export type TransactionRecord = {
   categoryName: string | null;
   notes: string | null;
   externalRef: string | null;
+  /** Instant the row was written, distinct from `operationDate` (a calendar day). */
+  createdAt: Date;
 };
 
 export type AccountSummary = {

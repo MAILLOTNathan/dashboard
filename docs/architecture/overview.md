@@ -14,7 +14,7 @@ the pages that consume it.
 | Module | Responsibility | Key files |
 | --- | --- | --- |
 | `identity` | The single owner account. No public sign-up: the account is created by the seed script. | `repository.ts` |
-| `budget` | Accounts, categories, transactions, monthly budgets, budget follow-up, salary simulation and monthly aggregation. | `domain.ts`, `totals.ts`, `salary.ts`, `report.ts`, `repository.ts` |
+| `budget` | Accounts, categories, transactions, monthly budgets, budget follow-up, salary simulation, recurring forecasts, financial goals and monthly aggregation. | `domain.ts`, `totals.ts`, `salary.ts`, `report.ts`, `recurrence.ts`, `goals.ts`, `transactions.ts`, `repository.ts` |
 | `real-estate` | Properties, cashflow entries, due dates, and the double-counting rule. | `domain.ts`, `repository.ts` |
 | `integrations` | Read-only GitHub and GitLab connections, provider adapters, snapshots. | `domain.ts`, `adapter.ts`, `github.ts`, `gitlab.ts`, `repository.ts` |
 | `dashboard` | Read-only aggregation for the home page. | `queries.ts` |
@@ -112,9 +112,36 @@ asked for: a cascade here would silently change what a property is worth.
   third click removes the row. The rate is the only stored figure; the day, week and month
   equivalents shown next to it are derived from the configured day length and a 5-day
   week (`salaryEquivalents`). Booking is a deliberate, separate click: it creates one
-  INCOME transaction for the month (amount recomputed from the `WORKED` days, category
-  « Salaire » created when missing, stable reference `salary:YYYY-MM` so a month cannot
-  be booked twice). Until that click the simulated amounts stay out of the totals.
+  INCOME transaction for the month (amount recomputed from the **clicked days** —
+  planned and worked, each counted once — category « Salaire » created when missing,
+  stable reference `salary:YYYY-MM` so a month cannot be booked twice). The « Prévisions »
+  tab shows that same prévision as the first row of the month's échéances, its
+  registration form in the row; once recorded, the booking appears among the month's
+  decisions, dated by the transaction's creation instant. Both doors call one action.
+  Until that click the simulated amounts stay out of the totals.
+- **Recurring forecasts** describe an expected income or expense (rent, subscription,
+  salary): a label, a positive magnitude, a direction, an account, an optional category,
+  a monthly cadence, a start date and an optional end date. A definition writes nothing
+  to the ledger. Opening the « Prévisions » tab materialises the month's occurrences
+  idempotently — the unique `(recurring, date)` and `skipDuplicates` make the write safe
+  to repeat, and a decided occurrence keeps its row, so it is never reset to pending or
+  offered twice. An occurrence falls on the start date's day of month, clamped to the
+  month's last day (the 31st → 28/29 February); the clamp does not propagate, so March
+  falls on the 31st again. Confirmation is the only door into the accounts: it reuses
+  the manual transaction path rule for rule, dates the entry on the **occurrence day**
+  and stores the stable reference `forecast:{occurrenceId}`; « Passer » and « Écarter »
+  record a terminal decision with its date and write no transaction. Deleting a series
+  is refused while one of its occurrences carries a decision — that audit trail, and the
+  link to a confirmed transaction, outlives the series — so a series is stopped with its
+  end date rather than erased.
+- **Financial goals** are target amounts: a name, a positive target, one explicit currency,
+  a target date and a status (`ACTIVE`, `ACHIEVED`, `ABANDONED`). The current amount comes
+  from exactly one source — a manual amount, or the **recorded balance** of one linked
+  account (the signed sum of its transactions) — and the two are mutually exclusive; a
+  goal may also carry neither, and its progress then reads « inconnue », never zero.
+  Linking is owner-scoped like every other lookup, and a linked account must be in the
+  goal's currency: the app refuses the link rather than converting. Goals are independent
+  of the monthly windows: they describe a horizon, not a month.
 
 ## Documented indicator definitions
 
@@ -159,8 +186,49 @@ asked for: a cascade here would silently change what a property is worth.
   - *equivalents* — day = rate × configured hours per day; week = day × 5 working days;
     month = week × 52/12. Displayed for information only, never stored.
   - *booking* — one INCOME transaction per month, labelled « Salaire {mois} », category
-    « Salaire » (created when missing), amount = the month's worked amount. The unique
+    « Salaire » (created when missing), amount = the month's **simulated** amount
+    (planned and worked days, each counted once) — the very figure the Prévisions tab
+    displays, so a month can be recorded as soon as it is planned. The unique
     `(account, externalRef = salary:YYYY-MM)` refuses a second booking of the month.
+- Recurring forecasts (budget page, « Prévisions » tab) — a planning view kept apart
+  from the ledger on purpose. Definitions and occurrences live in their own tables and
+  feed **no actual total**: `computeMonthlyTotals`, the budget follow-up and the charts
+  read `Transaction` rows, so a forecast moves a figure only on the day an occurrence is
+  confirmed — and that confirmation writes an ordinary transaction (same validation,
+  same aggregation rules, dated on the occurrence day). « Passée » and « Écartée » are
+  decisions with a date, not hidden deletes, and both create no transaction. All dates
+  are calendar days (`DATE`, UTC midnight) like every operation date; "today" and the
+  default month follow the same UTC calendar (`currentMonthKey`), so a late occurrence
+  is flagged against the convention every monthly window already uses. The same tab
+  shows the month's **salary prévision** — computed on the fly from the simulator's
+  calendar, never stored — as the first row of the échéances, with its registration in
+  the row; recording it calls the same booking action as the Salaire tab, so the two
+  tabs can never disagree. Above the list, the tab sums the month into per-currency
+  **prévisionnel** figures — expected income, expected expenses and the expected net —
+  counting pending and confirmed movements (a prévision that came true is still part
+  of what the month was expected to be) and excluding passed and dismissed ones. Like
+  every forecast figure, these totals never feed an actual total: only recorded
+  transactions do.
+- Financial goals (budget page, « Objectifs » tab) — progress of a savings or repayment
+  target, always shown as an amount **and** a percentage, with the currency explicit on
+  every figure. The rules are fixed here so the table can be read without guessing:
+  - *current* — the manual amount when the goal carries one; otherwise the recorded
+    balance of the linked account (the signed sum of its transactions). An account with
+    no recorded transaction, or a goal with neither source, reads **unknown** with the
+    reason displayed — never 0: "nothing recorded" is not "nothing saved". A real
+    0,00 € (an account whose movements net to zero) is shown as 0,00 €.
+  - *remaining* — target − current; negative when the goal is exceeded, so an over-target
+    goal stays visible as such.
+  - *percentage* — current ÷ target × 100, rounded **half-up to one decimal**
+    (`Decimal.ROUND_HALF_UP`). Above 100 % for an exceeded goal; a non-positive current
+    reads 0 %, the overdraft being told by the amounts rather than by a negative
+    percentage.
+  - *months left* — whole calendar months between the current month and the target month
+    (UTC). The target month itself counts as zero: the deadline falls this month.
+  - *monthly contribution* — remaining ÷ months left, rounded **half-up on cents**; with
+    zero months left it is the whole remaining amount (the deadline is now), and it is
+    not defined once the target date has passed or the goal is reached — the table states
+    the reason instead of a figure. The division is guarded, never a division by zero.
 - Property totals — each cashflow entry counts once. When an entry is linked to
   a transaction, the transaction is the only source of the amount.
 - GitHub issues — only **open** issues and pull requests are kept, and only the

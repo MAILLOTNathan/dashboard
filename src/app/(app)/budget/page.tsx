@@ -8,6 +8,8 @@ import { AnalysisSection } from "./analysis-section";
 import type { BudgetFilterValues } from "./budget-filters";
 import { BudgetTabs, resolveBudgetTab, type BudgetTab } from "./budget-tabs";
 import { BudgetsSection } from "./budgets-section";
+import { ForecastSection } from "./forecast-section";
+import { GoalsSection } from "./goals-section";
 import { OperationsSection } from "./operations-section";
 import { ReportSection } from "./report-section";
 import { SalarySection } from "./salary-section";
@@ -42,12 +44,13 @@ export default async function BudgetPage({
     readSearchParam(params, "breakdown") === "INCOME" ? "INCOME" : "EXPENSE";
 
   // The rows being corrected are read by the sections from the owner's own data, never
-  // taken from the query string: `?edit=` and `?editBudget=` are identifiers to look up,
-  // not authorisations.
+  // taken from the query string: `?edit=`, `?editBudget=` and `?editGoal=` are identifiers
+  // to look up, not authorisations.
   const editId = readSearchParam(params, "edit");
   const editBudgetId = readSearchParam(params, "editBudget");
+  const editGoalId = readSearchParam(params, "editGoal");
 
-  const tab = resolveBudgetTab(readSearchParam(params, "tab"), { editBudgetId });
+  const tab = resolveBudgetTab(readSearchParam(params, "tab"), { editBudgetId, editGoalId });
 
   // Month and filters travel from tab to tab (and to the CSV export), so switching a
   // section never silently changes what is displayed. Edition identifiers are left out:
@@ -63,6 +66,8 @@ export default async function BudgetPage({
     analysis: `Analyse de ${monthLabel} : totaux, tendance sur 12 mois et répartition par catégorie. Les transferts entre comptes comptent selon leur signe.`,
     budgets: `Budgets de ${monthLabel}, par catégorie et par devise. Les devises ne sont jamais converties.`,
     report: `Suivi du budget de ${monthLabel} : prévu, réalisé et reste par catégorie et par devise, sans conversion.`,
+    forecast: `Prévisions de ${monthLabel} : échéances attendues des séries récurrentes et salaire simulé du mois, à confirmer. Rien ne compte dans un total avant d'être enregistré.`,
+    goals: "Objectifs d'épargne ou de remboursement : progression, reste à atteindre et contribution mensuelle. Un solde inconnu ne vaut jamais zéro, et aucune devise n'est convertie.",
     salary: `Salaire simulé de ${monthLabel} : un taux horaire, un calendrier de jours prévus puis travaillés, et la recette du mois en un clic.`,
   };
 
@@ -106,6 +111,12 @@ export default async function BudgetPage({
       ) : null}
 
       {tab === "report" ? <ReportSection userId={user.id} monthKey={monthKey} /> : null}
+
+      {tab === "forecast" ? (
+        <ForecastSection userId={user.id} monthKey={monthKey} />
+      ) : null}
+
+      {tab === "goals" ? <GoalsSection userId={user.id} editGoalId={editGoalId} /> : null}
 
       {tab === "salary" ? <SalarySection userId={user.id} monthKey={monthKey} /> : null}
     </>

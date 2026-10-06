@@ -26,10 +26,29 @@ Working today:
   category and currency, with per-currency totals for the spending envelopes and the
   income goals under the table, over operation dates only, with refunds reducing their
   category and never a conversion between currencies.
+  A **Prévisions** tab materialises the month's expected occurrences of recurring
+  series — rent, subscriptions, salaries. Nothing counts in a total until a
+  confirmation: confirming creates the transaction through the same path as a manual
+  entry, while passing or discarding records an auditable decision and writes nothing;
+  a series is stopped with its end date rather than deleted once an échéance is decided.
+  The month's salary prévision from the simulator appears there too, as the first row of
+  the échéances with its registration in place; once recorded it joins the month's
+  decisions. Above the list, per-currency totals show the month's prévisionnel —
+  expected income, expenses and net, confirmed movements included, passed and dismissed
+  ones excluded.
+  An **Objectifs** tab tracks savings or repayment targets: a positive target amount in
+  one currency and a target date, with the current amount taken from a manual entry or
+  from the recorded balance of a linked account (the two are mutually exclusive).
+  Progress is shown as an amount and a percentage, with the remaining and the monthly
+  contribution — remaining divided by the whole months left, rounded half-up on cents —
+  and a deadline that has passed or a reached target states why no contribution is
+  defined. Missing or empty data reads "unknown", never zero, and no currency is ever
+  converted (a linked account must match the goal's currency).
   A **Salaire** tab simulates earnings from an hourly rate: one click on the calendar
   plans a day, a second marks it really worked, a third clears it. A booking button
-  records the month's worked amount as one income entry, in a default « Salaire »
-  category — nothing is written before that click.
+  records the month's simulated amount (planned and worked days, each counted once) as
+  one income entry, in a default « Salaire » category — nothing is written before that
+  click.
   Submitted values stay in the transaction and cashflow forms, so a second line is a
   small edit; the one-shot forms (account, category, property, password) clear themselves.
 - Real estate: properties and cashflow entries entered from the real-estate
@@ -46,10 +65,10 @@ Working today:
 Not implemented yet:
 
 - The budget view is a table, not an editable grid: correcting an operation means reopening it
-  in the entry form, not typing in the cell. Transactions and monthly budgets can be edited and
-  deleted; accounts, categories and properties can still only be created.
-- Accounts, categories and properties cannot be deleted yet; only transactions and
-  budgets can.
+  in the entry form, not typing in the cell. Transactions, monthly budgets and goals can be edited
+  and deleted; accounts, categories and properties can still only be created.
+- Accounts, categories and properties cannot be deleted yet; only transactions,
+  budgets and goals can.
 - A scheduler entry point for automatic synchronisation (the function exists and
   is idempotent; the trigger is not shipped).
 - Bank connection, payments, accounting, tax advice — permanently out of scope.

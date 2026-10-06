@@ -29,6 +29,7 @@ function transaction(
     categoryName: overrides.categoryName ?? null,
     notes: overrides.notes ?? null,
     externalRef: overrides.externalRef ?? null,
+    createdAt: new Date(Date.UTC(2026, 8, 1)),
   };
 }
 
