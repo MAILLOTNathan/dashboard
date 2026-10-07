@@ -114,6 +114,16 @@ export function currentMonthKey(now: Date = new Date()): string {
   return now.toISOString().slice(0, 7);
 }
 
+/**
+ * A `YYYY-MM` key whose month actually exists.
+ *
+ * `parseMonthKey` throws on month 13, so anything read from a query string is checked
+ * here first — a malformed link must fall back to a default, never crash a page.
+ */
+export function isValidMonthKey(value: string | null | undefined): value is string {
+  return value !== null && value !== undefined && /^\d{4}-(0[1-9]|1[0-2])$/.test(value);
+}
+
 export function parseMonthKey(value: string): { year: number; month: number } {
   const match = /^(\d{4})-(\d{2})$/.exec(value);
   if (!match) {

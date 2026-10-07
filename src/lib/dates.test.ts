@@ -5,6 +5,7 @@ import {
   formatDateOnly,
   formatShortMonthLabel,
   InvalidDateError,
+  isValidMonthKey,
   isValidTimeZone,
   monthKeysEndingAt,
   monthRange,
@@ -12,6 +13,28 @@ import {
   parseMonthKey,
   toDateOnlyString,
 } from "./dates";
+
+describe("isValidMonthKey", () => {
+  it("accepts a month that exists, boundaries included", () => {
+    expect(isValidMonthKey("2026-01")).toBe(true);
+    expect(isValidMonthKey("2026-12")).toBe(true);
+  });
+
+  it("rejects a month that does not exist — parseMonthKey would throw on it", () => {
+    expect(isValidMonthKey("2026-00")).toBe(false);
+    expect(isValidMonthKey("2026-13")).toBe(false);
+    expect(isValidMonthKey("2026-99")).toBe(false);
+  });
+
+  it("rejects a malformed or absent key", () => {
+    expect(isValidMonthKey("2026-1")).toBe(false);
+    expect(isValidMonthKey("2026-1a")).toBe(false);
+    expect(isValidMonthKey("2026-09-30")).toBe(false);
+    expect(isValidMonthKey("")).toBe(false);
+    expect(isValidMonthKey(null)).toBe(false);
+    expect(isValidMonthKey(undefined)).toBe(false);
+  });
+});
 
 describe("parseDateOnly", () => {
   it("parses a calendar day at UTC midnight", () => {

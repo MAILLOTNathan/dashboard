@@ -160,6 +160,14 @@ export async function GoalsSection({
     <Card
       title="Objectifs"
       description="Un objectif est un montant cible dans une devise, à atteindre avant une échéance. Sa progression vient d'un montant saisi à la main ou du solde enregistré d'un compte lié — jamais des deux. Sans source, ou sans opération sur le compte lié, la progression est affichée comme inconnue, pas comme zéro. La contribution mensuelle est le reste divisé par les mois entiers restants, arrondie au centime (au demi supérieur) ; elle n'est plus définie après l'échéance ni une fois l'objectif atteint. Aucune conversion entre devises."
+      actions={
+        <Link
+          href="/api/export/goals"
+          className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+        >
+          Exporter en CSV
+        </Link>
+      }
     >
       {goalEditTargetIsHidden ? (
         <Notice tone="warning">

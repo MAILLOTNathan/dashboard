@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { PageHeader } from "@/components/ui";
 import { requireUser } from "@/lib/auth/guard";
-import { currentMonthKey, formatMonthLabel, parseMonthKey } from "@/lib/dates";
+import { currentMonthKey, formatMonthLabel, isValidMonthKey, parseMonthKey } from "@/lib/dates";
 import { readSearchParam, type SearchParamsInput } from "@/lib/search-params";
 import { TRANSACTION_TYPES, type TransactionType } from "@/modules/budget/domain";
 import { AnalysisSection } from "./analysis-section";
@@ -25,9 +25,7 @@ export default async function BudgetPage({
   const params = await searchParams;
 
   const requestedMonth = readSearchParam(params, "month");
-  const monthKey = /^\d{4}-\d{2}$/.test(requestedMonth ?? "")
-    ? (requestedMonth as string)
-    : currentMonthKey();
+  const monthKey = isValidMonthKey(requestedMonth) ? requestedMonth : currentMonthKey();
   const { year, month } = parseMonthKey(monthKey);
   const monthLabel = formatMonthLabel(year, month);
 

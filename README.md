@@ -61,9 +61,13 @@ Working today:
   writes to the ledger automatically. Missing data is never treated as an anomaly: an
   account with no operation, a never-synced connection or a partially-read month keeps
   the rule quiet.
+- CSV exports: transactions (month + account/category/type/text filters), budgets
+  (month), goals and alerts (status filter), plus the properties file — all behind the
+  session, `no-store`, formula-neutralised, and bounded at 10 000 rows rather than
+  streamed (the decision is documented in the architecture notes). An unknown value
+  exports as an empty cell with its reason, never as a zero.
 - Real estate: properties and cashflow entries entered from the real-estate
-  page, occupancy status, totals, due dates.
-- GitHub / GitLab connections: read-only adapters, encrypted tokens, manual
+  page, occupancy status, totals, due dates.- GitHub / GitLab connections: read-only adapters, encrypted tokens, manual
   synchronisation, project snapshots, and a small GitHub: open issues and pull
   requests counted per repository, an explorer with combinable filters (repository,
   type, assignee, label, milestone, state, text), and milestones with their due dates
@@ -357,8 +361,9 @@ running. No test connects to a database or performs a real network call: busines
 rules are called directly, provider adapters receive an injected fake `fetch`, and
 the action-level tests mock their modules. They cover what is expensive to get
 wrong: money and date handling, monthly totals (transfers counted by sign, refunds,
-currencies), CSV escaping and formula neutralisation, the password policy and the
-session guard, provider failure cases, issue filters and milestones.
+currencies), CSV escaping and formula neutralisation, the export routes (filters,
+month boundaries, empty files, bounded reads, owner scoping), the password policy
+and the session guard, provider failure cases, issue filters and milestones.
 
 `.github/workflows/ci.yml` runs on every push to `main` and every pull request:
 install, generate the Prisma client, lint, type check, unit tests, apply the

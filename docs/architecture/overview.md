@@ -359,9 +359,34 @@ beside its fields.
   and never returned to the browser; only `hasStoredToken` is exposed.
 - Provider permissions are read-only; the adapters expose no write operation.
 - Exports are `no-store` and CSV values that could be read as a spreadsheet
-  formula are neutralised.
-- Personal data is never placed in fixtures, screenshots or logs. Error messages
+  formula are neutralised.- Personal data is never placed in fixtures, screenshots or logs. Error messages
   persisted for display contain a code, never a token or a payload.
+
+## Exports
+
+Four CSV exports leave the application, all through their own Route Handler:
+`/api/export/transactions` (month plus account, category, type and text filters),
+`/api/export/budgets` (month), `/api/export/goals` (status filter) and
+`/api/export/alerts` (status filter); properties have their own since the first
+slice. They share the same guards: `requireApiUser()` first (401 JSON, no read), the
+owner coming from the session and never from the query string, `Cache-Control:
+no-store`, and every value passing through `toCsv` in `lib/csv.ts` — a cell starting
+with `=`, `+`, `@` (or a number-compatible minus sign) is neutralised, while a plain
+negative amount such as `-350.00` stays a number.
+
+Two conventions of the data apply to the files. An **unknown value is an empty
+cell**, never a zero: a goal whose amount cannot be read exports blank numeric
+columns plus the reason in its `note` field. **Instants are ISO 8601 in UTC** (the
+alerts export), since a file loses the display time zone; calendar days stay
+`YYYY-MM-DD`. A malformed month falls back to the current one — `isValidMonthKey`
+exists because `parseMonthKey` throws on `2026-13`, and a bad link must not crash a
+page.
+
+Large exports are **bounded, not streamed**: every route passes `EXPORT_ROW_LIMIT`
+(10 000 rows, defined in `lib/csv.ts`) to its read, so the response is one SQL read
+and one in-memory string — a few megabytes, comfortable for a spreadsheet. Past that
+cap the right answer would be a cursor and a chunked response; until a dataset
+reaches it, the streaming machinery would buy nothing.
 
 ## Synchronisation
 

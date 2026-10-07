@@ -1105,10 +1105,14 @@ function toGoalRecord(row: GoalRow): GoalRecord {
 }
 
 /** All the owner's goals, oldest first, so the list reads like a register. */
-export async function listGoals(userId: string): Promise<GoalRecord[]> {
+export async function listGoals(
+  userId: string,
+  options: { take?: number } = {},
+): Promise<GoalRecord[]> {
   const rows = await getPrisma().goal.findMany({
     where: { userId },
     orderBy: [{ createdAt: "asc" }],
+    ...(options.take ? { take: options.take } : {}),
     select: GOAL_SELECT,
   });
 

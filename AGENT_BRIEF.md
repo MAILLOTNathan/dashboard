@@ -139,8 +139,9 @@ http://dashboard.localhost:8888 (the proxy belongs to the `full` profile).
 - Budget: accounts, categories, transactions (create; edit reopens the row in the
   form via `?edit=<id>`; delete with a confirmation step); filters; monthly totals
   per currency; two server-rendered SVG charts (12-month trend, category breakdown)
-  that always print exact figures; CSV export at `/api/export` (`no-store`,
-  formula neutralisation); monthly budgets per category and currency (create, edit
+  that always print exact figures; CSV export at `/api/export/transactions`
+  (`no-store`, formula neutralisation, bounded by `EXPORT_ROW_LIMIT`); monthly
+  budgets per category and currency (create, edit
   via `?editBudget=<id>`, delete with a confirmation step — a positive planned
   amount, duplicates rejected, currencies never converted). The page is split into
   seven tabs selected by `?tab=` — Opérations (entry, filters, month list), Analyse

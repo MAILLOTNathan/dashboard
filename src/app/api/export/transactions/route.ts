@@ -1,6 +1,12 @@
 import { requireApiUser, unauthorizedResponse } from "@/lib/auth/guard";
-import { createCsvResponse, toCsv, type CsvColumn } from "@/lib/csv";
-import { currentMonthKey, monthRange, parseMonthKey, toDateOnlyString } from "@/lib/dates";
+import { createCsvResponse, EXPORT_ROW_LIMIT, toCsv, type CsvColumn } from "@/lib/csv";
+import {
+  currentMonthKey,
+  isValidMonthKey,
+  monthRange,
+  parseMonthKey,
+  toDateOnlyString,
+} from "@/lib/dates";
 import { TRANSACTION_TYPES, type TransactionType } from "@/modules/budget/domain";
 import { listTransactions } from "@/modules/budget/repository";
 
@@ -44,7 +50,7 @@ export async function GET(request: Request): Promise<Response> {
 
   const url = new URL(request.url);
   const monthParam = url.searchParams.get("month");
-  const month = monthParam && /^\d{4}-\d{2}$/.test(monthParam) ? monthParam : currentMonthKey();
+  const month = isValidMonthKey(monthParam) ? monthParam : currentMonthKey();
   const { year, month: monthNumber } = parseMonthKey(month);
   const range = monthRange(year, monthNumber);
 
@@ -60,7 +66,8 @@ export async function GET(request: Request): Promise<Response> {
     categoryId: url.searchParams.get("category") ?? undefined,
     type,
     search: url.searchParams.get("q") ?? undefined,
-    take: 10_000,
+    // Bounded, not streamed: see EXPORT_ROW_LIMIT in `lib/csv.ts`.
+    take: EXPORT_ROW_LIMIT,
   });
 
   const rows: TransactionRow[] = transactions.map((transaction) => ({

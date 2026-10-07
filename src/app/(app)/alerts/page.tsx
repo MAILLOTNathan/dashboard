@@ -49,7 +49,17 @@ export default async function AlertsPage() {
       <PageHeader
         title="Alertes"
         description="Règles déterministes sur vos propres données : aucun contrôle statistique, aucune écriture automatique dans les opérations. Une alerte écartée se tait tant que la situation dure, puis revient si elle se reproduit après résolution."
-        actions={<RefreshAlertsButton />}
+        actions={
+          <>
+            <RefreshAlertsButton />
+            <a
+              href="/api/export/alerts"
+              className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+            >
+              Exporter en CSV
+            </a>
+          </>
+        }
       />
 
       <section aria-labelledby="alertes-actives" className="flex flex-col gap-3">

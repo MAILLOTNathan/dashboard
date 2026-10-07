@@ -57,6 +57,14 @@ export async function BudgetsSection({
     <Card
       title={`Budgets mensuels — ${formatMonthLabel(year, month)}`}
       description="Montants prévus par catégorie et par devise pour le mois affiché. Un budget est toujours positif ; les devises restent séparées et ne sont jamais converties."
+      actions={
+        <Link
+          href={`/api/export/budgets?month=${monthKey}`}
+          className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+        >
+          Exporter en CSV
+        </Link>
+      }
     >
       <form method="get" action="/budget" className="mb-4 flex flex-wrap items-end gap-2">
         <input type="hidden" name="tab" value="budgets" />

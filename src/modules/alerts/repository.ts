@@ -74,12 +74,17 @@ const STATUS_ORDER: AlertStatus[] = ["ACTIVE", "DISMISSED", "RESOLVED"];
 /**
  * Every alert of this owner, active first, most recently triggered first inside a group.
  * The table is small by construction (one row per watched condition), so it is read
- * whole — the lifecycle needs all fingerprints anyway.
+ * whole — the lifecycle needs all fingerprints anyway. A caller that only displays or
+ * exports a slice may pass a status and a row bound.
  */
-export async function listAlerts(userId: string): Promise<AlertRecord[]> {
+export async function listAlerts(
+  userId: string,
+  options: { status?: AlertStatus; take?: number } = {},
+): Promise<AlertRecord[]> {
   const rows = await getPrisma().alert.findMany({
-    where: { userId },
+    where: { userId, ...(options.status ? { status: options.status } : {}) },
     orderBy: { triggeredAt: "desc" },
+    ...(options.take ? { take: options.take } : {}),
     select: ALERT_SELECT,
   });
 

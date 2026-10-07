@@ -11,6 +11,18 @@ export type CsvColumn<Row> = {
   header: string;
 };
 
+/**
+ * How many rows one export may contain.
+ *
+ * The decision is **bound, don't stream**: an export is built in memory from one SQL
+ * read, so the read itself carries the limit. At this size the file stays a few
+ * megabytes — comfortable for a spreadsheet — and the server never risks building an
+ * unbounded string. Past this cap the right answer would be a real streaming writer
+ * (cursor + chunked response); until a dataset actually reaches it, that complexity
+ * buys nothing. Every route passes this value to its repository read.
+ */
+export const EXPORT_ROW_LIMIT = 10_000;
+
 const FORMULA_TRIGGERS = ["=", "+", "@", "\t", "\r"];
 
 function looksLikeNumber(value: string): boolean {
