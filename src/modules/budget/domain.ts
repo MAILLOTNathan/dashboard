@@ -27,6 +27,14 @@ export const ACCOUNT_TYPES = [
 ] as const;
 export type AccountType = (typeof ACCOUNT_TYPES)[number];
 
+export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
+  CHECKING: "Compte courant",
+  SAVINGS: "Compte d'épargne",
+  CASH: "Espèces",
+  CREDIT_CARD: "Carte de crédit",
+  OTHER: "Autre",
+};
+
 export const CATEGORY_KINDS = ["INCOME", "EXPENSE"] as const;
 export type CategoryKind = (typeof CATEGORY_KINDS)[number];
 
@@ -50,6 +58,10 @@ export type TransactionRecord = {
   categoryName: string | null;
   notes: string | null;
   externalRef: string | null;
+  /** Shared by the two legs of a linked transfer; null for a single-leg entry. */
+  transferGroupId: string | null;
+  /** Day the line was checked against a bank statement; null when not checked yet. */
+  reconciledAt: Date | null;
   /** Instant the row was written, distinct from `operationDate` (a calendar day). */
   createdAt: Date;
 };
@@ -145,6 +157,54 @@ export type CategoryInput = z.input<typeof categoryInputSchema>;
 export type ValidatedCategoryInput = z.output<typeof categoryInputSchema>;
 
 /**
+ * Creation fields plus the identifier of the row, for renaming an account.
+ *
+ * The currency may only change while no transaction uses the account: existing rows
+ * keep the currency they were written in, and the app never converts. Changing it on a
+ * used account would make the account and its own history contradict each other, so
+ * the server refuses that case instead.
+ */
+export const accountUpdateSchema = accountInputSchema.extend({
+  id: z.string().trim().min(1, "Identifiant manquant."),
+});
+
+/** Payload of an archive or a restore: the row, and the state the owner wants. */
+export const accountArchiveSchema = z.object({
+  id: z.string().trim().min(1, "Identifiant manquant."),
+  archived: z.enum(["true", "false"]).transform((value) => value === "true"),
+});
+
+export type AccountArchiveInput = z.input<typeof accountArchiveSchema>;
+
+/**
+ * Payload for renaming a category, or moving it between kinds.
+ *
+ * The kind may only change while no transaction uses the category: transactions and
+ * budgets tell a story with it (an expense filed under an income category is counted
+ * on the wrong side by every report), so the server refuses the move once the category
+ * is in use rather than silently re-labelling history.
+ */
+export const categoryUpdateSchema = categoryInputSchema.extend({
+  id: z.string().trim().min(1, "Identifiant manquant."),
+});
+
+/**
+ * Payload for merging a category into another one.
+ *
+ * Merging repoints transactions, recurring series and budgets of the source to the
+ * target, then deletes the source. Both must share the same kind — merging an expense
+ * into an income category would move history to the wrong side of the ledger, and the
+ * action checks the stored rows for it.
+ */
+export const categoryMergeSchema = z.object({
+  sourceId: z.string().trim().min(1, "Catégorie source manquante."),
+  targetId: z.string().trim().min(1, "Catégorie cible manquante."),
+});
+
+export type CategoryMergeValues = z.input<typeof categoryMergeSchema>;
+export type ValidatedCategoryMerge = z.output<typeof categoryMergeSchema>;
+
+/**
  * Input contract for a transaction, validated before it reaches the database.
  * Shared by the server actions and the spreadsheet view.
  *
@@ -193,6 +253,49 @@ export const transactionUpdateSchema = transactionFormSchema.extend({
 
 export type TransactionUpdateValues = z.input<typeof transactionUpdateSchema>;
 export type ValidatedTransactionUpdate = z.output<typeof transactionUpdateSchema>;
+
+/**
+ * Payload for an internal transfer between two accounts, entered as one action.
+ *
+ * The amount is a **positive magnitude**: the direction is carried by the two accounts,
+ * never by the sign. Both accounts must share the same currency — the app never
+ * converts, so a linked transfer exists within one currency only. The two movements are
+ * written together, share a `transferGroupId`, and keep the sign convention (the source
+ * leg is negative, the destination leg positive).
+ */
+export const transferInputSchema = z
+  .object({
+    fromAccountId: z.string().trim().min(1, "Un compte source est requis."),
+    toAccountId: z.string().trim().min(1, "Un compte de destination est requis."),
+    amount: amount.refine(
+      (value) => value.greaterThan(0),
+      "Le montant du virement doit être supérieur à zéro.",
+    ),
+    operationDate: requiredDate,
+    label: optionalText(200, "Le libellé est limité à 200 caractères."),
+    notes: optionalText(2000, "Les notes sont limitées à 2000 caractères."),
+  })
+  .refine((value) => value.fromAccountId !== value.toAccountId, {
+    message: "Le compte source et le compte de destination doivent être différents.",
+    path: ["toAccountId"],
+  });
+
+export type TransferInput = z.input<typeof transferInputSchema>;
+export type ValidatedTransferInput = z.output<typeof transferInputSchema>;
+
+/**
+ * Payload of a reconciliation tick: the row, and the state the owner wants.
+ *
+ * The tick only records the day a line was checked against a bank statement. It never
+ * changes the amount, the date or the account — correcting a line stays the entry
+ * form's job.
+ */
+export const reconciliationInputSchema = z.object({
+  id: z.string().trim().min(1, "Identifiant manquant."),
+  reconciled: z.enum(["true", "false"]).transform((value) => value === "true"),
+});
+
+export type ReconciliationInput = z.input<typeof reconciliationInputSchema>;
 
 /**
  * A transaction prepared for the entry form.
@@ -374,6 +477,11 @@ export type ValidatedBudgetInput = z.output<typeof budgetInputSchema>;
 export const budgetUpdateSchema = budgetInputSchema.extend({
   id: z.string().trim().min(1, "Identifiant manquant."),
 });
+
+/** Which month receives a copy of the previous month's budgets. */
+export const budgetCopySchema = z.object({ month: budgetMonthSchema });
+
+export type BudgetCopyInput = z.input<typeof budgetCopySchema>;
 
 export type BudgetUpdateValues = z.input<typeof budgetUpdateSchema>;
 export type ValidatedBudgetUpdate = z.output<typeof budgetUpdateSchema>;

@@ -11,7 +11,7 @@ import { z } from "zod";
  * be replayed by hand.
  */
 export type ActionResult =
-  | { status: "ok" }
+  | { status: "ok"; message?: string }
   | { status: "invalid"; message: string; fieldErrors: Record<string, string[]> }
   | { status: "error"; message: string };
 

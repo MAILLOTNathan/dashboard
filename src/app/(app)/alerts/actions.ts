@@ -46,6 +46,14 @@ function toRuleConfigs(input: AlertRulesInput): AlertRuleConfig[] {
       thresholdPercent: input.budgetOverrun.thresholdPercent,
       thresholdDays: null,
     },
+    BUDGET_THRESHOLD: {
+      kind: "BUDGET_THRESHOLD",
+      enabled: input.budgetThreshold.enabled,
+      thresholdAmount: null,
+      thresholdCurrency: null,
+      thresholdPercent: input.budgetThreshold.thresholdPercent,
+      thresholdDays: null,
+    },
     UNUSUAL_EXPENSE: {
       kind: "UNUSUAL_EXPENSE",
       enabled: input.unusualExpense.enabled,

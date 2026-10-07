@@ -7,11 +7,18 @@ import {
   tdClass,
   thClass,
 } from "@/components/ui";
-import { formatMonthLabel, parseMonthKey } from "@/lib/dates";
-import { formatMoney } from "@/lib/money";
+import { formatMonthLabel, monthKeysEndingAt, monthRange, parseMonthKey, shiftMonthKey } from "@/lib/dates";
+import { formatMoney, isSupportedCurrency, toDecimalString, type Currency } from "@/lib/money";
 import { toBudgetFormInitialValues, type CategoryKind } from "@/modules/budget/domain";
-import { findBudget, listBudgets, listCategories } from "@/modules/budget/repository";
+import {
+  findBudget,
+  listBudgets,
+  listCategories,
+  listTransactionsForSeries,
+} from "@/modules/budget/repository";
+import { AVERAGE_WINDOW_MONTHS, computeCategoryAverages } from "@/modules/budget/averages";
 import { BudgetForm } from "./budget-form";
+import { CopyBudgetsButton } from "./copy-budgets-button";
 import { DeleteBudgetButton } from "./delete-budget-button";
 
 const CATEGORY_KIND_LABELS: Record<CategoryKind, string> = {
@@ -29,21 +36,67 @@ export async function BudgetsSection({
   userId,
   monthKey,
   editBudgetId,
+  newBudgetCategory,
+  newBudgetCurrency,
 }: {
   userId: string;
   /** `YYYY-MM`, the month shared by every tab. */
   monthKey: string;
   /** `?editBudget=`, an identifier to look up: a foreign one finds nothing. */
   editBudgetId?: string;
+  /** `?newBudgetCategory=`, opening the form from a rolling-average suggestion. */
+  newBudgetCategory?: string;
+  /** `?newBudgetCurrency=`, the suggestion's currency. */
+  newBudgetCurrency?: string;
 }) {
   const { year, month } = parseMonthKey(monthKey);
 
-  const [categories, budgets, editBudgetTarget] = await Promise.all([
+  // The rolling window: the three months **before** the displayed one — a running month
+  // is not an average yet. Bounded like every series read; if the bound is reached the
+  // averages are hidden rather than computed on a partial history.
+  const averageMonthKeys = monthKeysEndingAt(monthKey, AVERAGE_WINDOW_MONTHS + 1).slice(
+    0,
+    AVERAGE_WINDOW_MONTHS,
+  );
+  const firstAverageMonth = parseMonthKey(averageMonthKeys[0]);
+  const averageStart = monthRange(firstAverageMonth.year, firstAverageMonth.month);
+  const averageEnd = monthRange(year, month).start;
+
+  const [categories, budgets, editBudgetTarget, averageRead] = await Promise.all([
     listCategories(userId),
     // The budgets of the displayed month: the section never mixes months or currencies.
     listBudgets(userId, { year, month }),
     editBudgetId ? findBudget(userId, editBudgetId) : Promise.resolve(null),
+    listTransactionsForSeries(userId, { from: averageStart.start, to: averageEnd }),
   ]);
+
+  const averages = averageRead.truncated
+    ? []
+    : computeCategoryAverages(averageRead.transactions, {
+        monthCount: AVERAGE_WINDOW_MONTHS,
+      });
+  const averageByCategoryCurrency = new Map(
+    averages.map((average) => [`${average.categoryId}|${average.currency}`, average]),
+  );
+
+  // A suggestion is a category with a recent average and no budget yet for that month and
+  // currency: the list offers to open the form with the average already in it.
+  const budgetKeys = new Set(budgets.map((budget) => `${budget.categoryId}|${budget.currency}`));
+  const suggestions = averages.filter(
+    (average) => !budgetKeys.has(`${average.categoryId}|${average.currency}`),
+  );
+
+  const requestedCurrency =
+    newBudgetCurrency !== undefined && isSupportedCurrency(newBudgetCurrency)
+      ? (newBudgetCurrency as Currency)
+      : undefined;
+  const requestedSuggestion = newBudgetCategory
+    ? averages.find(
+        (average) =>
+          average.categoryId === newBudgetCategory &&
+          (requestedCurrency === undefined || average.currency === requestedCurrency),
+      )
+    : undefined;
 
   // A stale or foreign identifier fills nothing and is reported, so the form never looks
   // like it silently lost the row.
@@ -52,18 +105,24 @@ export async function BudgetsSection({
 
   // Where "Annuler" returns to, month and tab preserved.
   const listHref = `/budget?month=${monthKey}&tab=budgets`;
+  const previousKey = shiftMonthKey(monthKey, -1);
+  const previous = parseMonthKey(previousKey);
+  const previousLabel = formatMonthLabel(previous.year, previous.month);
 
   return (
     <Card
       title={`Budgets mensuels — ${formatMonthLabel(year, month)}`}
       description="Montants prévus par catégorie et par devise pour le mois affiché. Un budget est toujours positif ; les devises restent séparées et ne sont jamais converties."
       actions={
-        <Link
-          href={`/api/export/budgets?month=${monthKey}`}
-          className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
-        >
-          Exporter en CSV
-        </Link>
+        <span className="flex flex-wrap items-center gap-2">
+          <CopyBudgetsButton monthKey={monthKey} previousLabel={previousLabel} />
+          <Link
+            href={`/api/export/budgets?month=${monthKey}`}
+            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            Exporter en CSV
+          </Link>
+        </span>
       }
     >
       <form method="get" action="/budget" className="mb-4 flex flex-wrap items-end gap-2">
@@ -110,13 +169,37 @@ export async function BudgetsSection({
           />
         </div>
       ) : (
-        <details open>
+        <details open={Boolean(requestedSuggestion)}>
           <summary className="cursor-pointer text-sm font-medium">Nouveau budget</summary>
           <div className="pt-3">
-            <BudgetForm categories={categories} defaultMonth={monthKey} />
+            <BudgetForm
+              categories={categories}
+              defaultMonth={monthKey}
+              defaultCategoryId={requestedSuggestion?.categoryId}
+              defaultCurrency={requestedSuggestion?.currency}
+              defaultAmount={
+                requestedSuggestion ? toDecimalString(requestedSuggestion.monthlyAverage) : undefined
+              }
+              averageHint={
+                requestedSuggestion
+                  ? `Moyenne des ${AVERAGE_WINDOW_MONTHS} derniers mois : ${formatMoney({
+                      amount: requestedSuggestion.monthlyAverage,
+                      currency: requestedSuggestion.currency,
+                    })} (${requestedSuggestion.activeMonths} mois actif${requestedSuggestion.activeMonths > 1 ? "s" : ""} sur ${AVERAGE_WINDOW_MONTHS}). Ajustez librement.`
+                  : undefined
+              }
+            />
           </div>
         </details>
       )}
+
+      {averageRead.truncated ? (
+        <Notice tone="warning">
+          Trop d&apos;opérations sur les {AVERAGE_WINDOW_MONTHS} derniers mois pour
+          calculer des moyennes fiables : la colonne reste vide plutôt que de montrer un
+          chiffre partiel.
+        </Notice>
+      ) : null}
 
       <div className="mt-4">
         {budgets.length === 0 ? (
@@ -139,6 +222,9 @@ export async function BudgetsSection({
                 </th>
                 <th scope="col" className={`${thClass} text-right`}>
                   Montant prévu
+                </th>
+                <th scope="col" className={`${thClass} text-right`}>
+                  Moyenne {AVERAGE_WINDOW_MONTHS} mois
                 </th>
                 <th scope="col" className={thClass}>
                   Action
@@ -164,6 +250,20 @@ export async function BudgetsSection({
                       currency: budget.currency,
                     })}
                   </td>
+                  <td className={`${tdClass} whitespace-nowrap text-right tabular-nums`}>
+                    {(() => {
+                      const average = averageByCategoryCurrency.get(
+                        `${budget.categoryId}|${budget.currency}`,
+                      );
+
+                      return average
+                        ? formatMoney({
+                            amount: average.monthlyAverage,
+                            currency: average.currency,
+                          })
+                        : "—";
+                    })()}
+                  </td>
                   <td className={tdClass}>
                     <div className="flex flex-col items-start gap-1">
                       <Link
@@ -187,6 +287,45 @@ export async function BudgetsSection({
           </TableShell>
         )}
       </div>
+
+      {suggestions.length > 0 ? (
+        <div className="mt-6">
+          <h3 className="text-sm font-semibold">
+            Suggestions — moyenne des {AVERAGE_WINDOW_MONTHS} derniers mois
+          </h3>
+          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+            Catégories sans budget ce mois-ci, avec ce qu&apos;elles coûtent en moyenne par
+            mois (mois vides compris). « Utiliser » ouvre le formulaire prérempli — rien
+            n&apos;est enregistré avant validation.
+          </p>
+          <ul className="mt-2 flex flex-col gap-1 text-sm">
+            {suggestions.map((suggestion) => (
+              <li
+                key={`${suggestion.categoryId}|${suggestion.currency}`}
+                className="flex flex-wrap items-center gap-2"
+              >
+                <span className="font-medium">{suggestion.categoryName}</span>
+                <span className="text-zinc-500 dark:text-zinc-400">
+                  {suggestion.kind === "EXPENSE" ? "dépense" : "recette"} ·{" "}
+                  {suggestion.currency} · moyenne{" "}
+                  {formatMoney({
+                    amount: suggestion.monthlyAverage,
+                    currency: suggestion.currency,
+                  })}{" "}
+                  ({suggestion.activeMonths}/{AVERAGE_WINDOW_MONTHS} mois actif
+                  {suggestion.activeMonths > 1 ? "s" : ""})
+                </span>
+                <Link
+                  href={`/budget?month=${monthKey}&tab=budgets&newBudgetCategory=${suggestion.categoryId}&newBudgetCurrency=${suggestion.currency}`}
+                  className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                >
+                  Utiliser
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </Card>
   );
 }

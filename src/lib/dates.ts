@@ -179,3 +179,36 @@ export function monthKeysEndingAt(monthKey: string, count: number): string[] {
 
   return keys;
 }
+
+/** Shifts a `YYYY-MM` key by a number of months; negative goes back. */
+export function shiftMonthKey(monthKey: string, months: number): string {
+  if (!Number.isInteger(months)) {
+    throw new RangeError(`Invalid month offset: ${months}`);
+  }
+
+  const { year, month } = parseMonthKey(monthKey);
+  const total = year * 12 + (month - 1) + months;
+
+  if (total < 0 || total > 9999 * 12 + 11) {
+    throw new RangeError(`Month out of bounds: ${monthKey} shifted by ${months}`);
+  }
+
+  const shiftedYear = Math.floor(total / 12);
+  const shiftedMonth = (total % 12) + 1;
+
+  return `${String(shiftedYear).padStart(4, "0")}-${String(shiftedMonth).padStart(2, "0")}`;
+}
+
+/** The `count` month keys starting at `monthKey`, oldest first. */
+export function monthKeysFrom(monthKey: string, count: number): string[] {
+  if (!Number.isInteger(count) || count < 1) {
+    throw new RangeError(`Invalid month count: ${count}`);
+  }
+
+  return Array.from({ length: count }, (_, offset) => shiftMonthKey(monthKey, offset));
+}
+
+/** Year bounds for operation dates, following the same exclusive-end convention. */
+export function yearRange(year: number): { year: number; start: Date; end: Date } {
+  return { year, start: monthRange(year, 1).start, end: monthRange(year, 12).end };
+}

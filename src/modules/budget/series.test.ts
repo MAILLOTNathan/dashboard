@@ -29,6 +29,8 @@ function transaction(overrides: {
     categoryName: overrides.categoryName ?? null,
     notes: null,
     externalRef: null,
+    transferGroupId: null,
+    reconciledAt: null,
     createdAt: new Date("2026-08-03T00:00:00.000Z"),
   };
 }

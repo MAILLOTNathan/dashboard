@@ -10,6 +10,8 @@ import {
 import { requireUser } from "@/lib/auth/guard";
 import { recordIdInput } from "@/lib/validation";
 import {
+  GOAL_CONTRIBUTION_LINKED_MESSAGE,
+  goalContributionInputSchema,
   goalInputSchema,
   goalUpdateSchema,
   type GoalStatus,
@@ -17,7 +19,15 @@ import {
 } from "@/modules/budget/goals";
 import type { Currency } from "@/lib/money";
 import type Decimal from "decimal.js";
-import { createGoal, deleteGoal, findAccount, updateGoal } from "@/modules/budget/repository";
+import {
+  createGoal,
+  createGoalContribution,
+  deleteGoal,
+  deleteGoalContribution,
+  findAccount,
+  findGoal,
+  updateGoal,
+} from "@/modules/budget/repository";
 
 /**
  * Write Server Actions for financial goals (BP-04).
@@ -139,6 +149,70 @@ export async function deleteGoalAction(values: unknown): Promise<ActionResult> {
     }
   } catch (error) {
     return unexpectedResult("deleteGoal", error);
+  }
+
+  revalidatePath("/budget");
+  return { status: "ok" };
+}
+
+/**
+ * Logs one contribution onto a manual goal.
+ *
+ * Contributions belong to manual goals: a goal linked to an account reads that
+ * account's balance, and adding contributions on top would count the same money twice —
+ * the action refuses with that reason. The contribution never touches the ledger: it is
+ * a dated log entry that adds to the goal's starting amount, so the progress moves by
+ * exactly what was logged.
+ */
+export async function addGoalContributionAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = goalContributionInputSchema.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  try {
+    const goal = await findGoal(user.id, parsed.data.goalId);
+    if (!goal) {
+      return rejectedResult("goalId", "Objectif introuvable : il a peut-être été supprimé entre-temps.");
+    }
+
+    if (goal.accountId !== null) {
+      return rejectedResult("goalId", GOAL_CONTRIBUTION_LINKED_MESSAGE);
+    }
+
+    await createGoalContribution({
+      userId: user.id,
+      goalId: goal.id,
+      amount: parsed.data.amount,
+      date: parsed.data.date,
+      note: parsed.data.note,
+    });
+  } catch (error) {
+    return unexpectedResult("addGoalContribution", error);
+  }
+
+  revalidatePath("/budget");
+  return { status: "ok" };
+}
+
+/** Removes one logged contribution; the goal's progress moves back accordingly. */
+export async function deleteGoalContributionAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = recordIdInput.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  try {
+    const deleted = await deleteGoalContribution(user.id, parsed.data.id);
+    if (!deleted) {
+      return rejectedResult("id", "Contribution introuvable : elle a peut-être déjà été supprimée.");
+    }
+  } catch (error) {
+    return unexpectedResult("deleteGoalContribution", error);
   }
 
   revalidatePath("/budget");

@@ -220,6 +220,8 @@ describe("toTransactionFormInitialValues", () => {
     categoryName: "Courses",
     notes: null,
     externalRef: null,
+    transferGroupId: null,
+    reconciledAt: null,
     createdAt: new Date("2026-09-30T00:00:00.000Z"),
   };
 

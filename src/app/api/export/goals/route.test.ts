@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const requireApiUserMock = vi.fn();
 const listGoalsMock = vi.fn();
 const readAccountBalanceMock = vi.fn();
+const sumGoalContributionsMock = vi.fn();
 
 vi.mock("@/lib/auth/guard", () => ({
   requireApiUser: () => requireApiUserMock(),
@@ -16,6 +17,7 @@ vi.mock("@/lib/auth/guard", () => ({
 vi.mock("@/modules/budget/repository", () => ({
   listGoals: (...args: unknown[]) => listGoalsMock(...args),
   readAccountBalance: (...args: unknown[]) => readAccountBalanceMock(...args),
+  sumGoalContributions: (...args: unknown[]) => sumGoalContributionsMock(...args),
 }));
 
 const { GET } = await import("./route");
@@ -57,6 +59,8 @@ beforeEach(() => {
     transactionCount: 3,
     balance: new Decimal("250.00"),
   });
+  // No logged contributions by default: the manual amount is the only source.
+  sumGoalContributionsMock.mockReset().mockResolvedValue(new Map());
 });
 
 afterEach(() => {
@@ -107,6 +111,17 @@ describe("GET /api/export/goals", () => {
     expect(lines[1]).toBe(
       "Apport immobilier,EUR,1000.00,2027-06-30,ACTIVE,compte,Compte courant,250.00,25.0,750.00,93.75,",
     );
+  });
+
+  it("adds logged contributions to a manual goal, exactly like the screen does", async () => {
+    sumGoalContributionsMock.mockResolvedValue(
+      new Map([["goal-1", { count: 2, total: new Decimal("150.00") }]]),
+    );
+
+    const lines = await bodyOf(await GET(new Request("http://test.local/api/export/goals")));
+
+    // 300 (starting amount) + 150 (contributions) = 450 → 45 % of 1000.
+    expect(lines[1]).toContain(",450.00,45.0,550.00,");
   });
 
   it("writes empty numeric cells and the reason for an unknown amount — never a zero", async () => {

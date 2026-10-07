@@ -2,7 +2,7 @@ import Decimal from "decimal.js";
 import { describe, expect, it } from "vitest";
 import type { AlertRuleConfig } from "@/modules/alerts/domain";
 import type { TransactionRecord } from "./domain";
-import { evaluateBudgetOverrun, evaluateLowBalance, evaluateUnusualExpense } from "./alerts";
+import { evaluateBudgetOverrun, evaluateBudgetThreshold, evaluateLowBalance, evaluateUnusualExpense } from "./alerts";
 import type { BudgetReportRow } from "./report";
 
 /** Fictitious data only. Every rule is pure, so fixed dates are enough. */
@@ -150,6 +150,81 @@ describe("evaluateBudgetOverrun", () => {
   });
 });
 
+describe("evaluateBudgetThreshold", () => {
+  const threshold80 = rule({
+    kind: "BUDGET_THRESHOLD",
+    thresholdPercent: new Decimal(80),
+  });
+
+  it("triggers once the realized reaches the configured share of the envelope", () => {
+    const row = expenseRow({ actual: new Decimal("250"), remaining: new Decimal("50") });
+    const candidates = evaluateBudgetThreshold([row], threshold80, { monthKey: "2026-10" });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].fingerprint).toBe("budget-threshold:category-1:EUR:2026-10");
+    expect(candidates[0].inputs.percent).toBe("83.3");
+    expect(candidates[0].inputs.thresholdPercent).toBe("80");
+    expect(candidates[0].inputs.actual).toBe("250.00");
+  });
+
+  it("triggers exactly at the threshold, boundary included", () => {
+    const row = expenseRow({ actual: new Decimal("240"), remaining: new Decimal("60") });
+
+    expect(evaluateBudgetThreshold([row], threshold80, { monthKey: "2026-10" })).toHaveLength(1);
+  });
+
+  it("stays quiet below the threshold", () => {
+    const row = expenseRow({ actual: new Decimal("239.99"), remaining: new Decimal("60.01") });
+
+    expect(evaluateBudgetThreshold([row], threshold80, { monthKey: "2026-10" })).toEqual([]);
+  });
+
+  it("still runs when the envelope is exactly used up: the overrun rule only covers real overruns", () => {
+    const row = expenseRow({ actual: new Decimal("300"), remaining: new Decimal(0) });
+
+    expect(evaluateBudgetThreshold([row], threshold80, { monthKey: "2026-10" })).toHaveLength(1);
+  });
+
+  it("hands the situation over to the overrun rule the moment the plan is exceeded", () => {
+    // 320 for 300: the overrun rule's situation, never both at once.
+    expect(evaluateBudgetThreshold([expenseRow()], threshold80, { monthKey: "2026-10" })).toEqual([]);
+  });
+
+  it("never fires on a refund-dominated envelope (negative actual)", () => {
+    const row = expenseRow({ actual: new Decimal("-20"), remaining: new Decimal("320") });
+
+    expect(evaluateBudgetThreshold([row], threshold80, { monthKey: "2026-10" })).toEqual([]);
+  });
+
+  it("ignores income targets and truncated reads, like the overrun rule", () => {
+    const incomeGoal = expenseRow({ categoryKind: "INCOME" });
+
+    expect(evaluateBudgetThreshold([incomeGoal], threshold80, { monthKey: "2026-10" })).toEqual([]);
+    expect(
+      evaluateBudgetThreshold([expenseRow()], threshold80, {
+        monthKey: "2026-10",
+        truncated: true,
+      }),
+    ).toEqual([]);
+  });
+
+  it("stays quiet when disabled", () => {
+    expect(
+      evaluateBudgetThreshold([expenseRow()], { ...threshold80, enabled: false }, { monthKey: "2026-10" }),
+    ).toEqual([]);
+  });
+
+  it("a zero threshold fires as soon as anything is spent, without overlapping the overrun", () => {
+    const zero = rule({ kind: "BUDGET_THRESHOLD", thresholdPercent: new Decimal(0) });
+    const spent = expenseRow({ actual: new Decimal("1"), remaining: new Decimal("299") });
+
+    expect(evaluateBudgetThreshold([spent], zero, { monthKey: "2026-10" })).toHaveLength(1);
+    // Nothing spent yet: even a zero threshold does not accuse an untouched envelope.
+    const untouched = expenseRow({ actual: new Decimal(0), remaining: new Decimal("300") });
+    expect(evaluateBudgetThreshold([untouched], zero, { monthKey: "2026-10" })).toEqual([]);
+  });
+});
+
 function transaction(overrides: Partial<TransactionRecord> = {}): TransactionRecord {
   return {
     id: "tx-1",
@@ -164,6 +239,8 @@ function transaction(overrides: Partial<TransactionRecord> = {}): TransactionRec
     categoryName: null,
     notes: null,
     externalRef: null,
+    transferGroupId: null,
+    reconciledAt: null,
     createdAt: new Date(Date.UTC(2026, 9, 3, 8, 0)),
     ...overrides,
   };

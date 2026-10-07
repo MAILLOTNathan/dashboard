@@ -18,10 +18,20 @@ Working today:
   page to change the owner password.
 - Personal budget: accounts, categories, transactions entered from the budget
   page, monthly totals per currency, filters, CSV export, deletion with confirmation,
-  correction of an existing operation (the row reopens in the entry form, filters kept)
-  and two charts (a 12-month trend and the month's spending per category). Monthly
-  budgets per category and currency complete the picture: a positive planned amount,
-  duplicates for the same month refused, currencies kept separate with no conversion.
+  correction of an existing operation and two charts (a 12-month trend and the month's
+  spending per category). The month's list is a small spreadsheet: rows are editable in
+  place (Enter saves, Escape cancels; notes stay in the full form), columns sort, pages
+  are counted rather than the list silently cut, a « Pointer » tick records the day a
+  line was checked against a bank statement (with its own filter), an operation can be
+  duplicated into a fresh form, and a text search can widen to every month. A
+  « Virement entre comptes » form writes both legs of an internal transfer in one go
+  (linked by a shared identifier, deletable as a whole, never across currencies).
+  Monthly budgets per category and currency complete the picture: a positive planned
+  amount, duplicates for the same month refused, currencies kept separate with no
+  conversion, a one-click copy of the previous month's envelopes, and rolling 3-month
+  averages shown as suggestions (display only, never stored).
+  A **Comparaison** card on the Analyse tab reads the displayed month against the
+  previous one and the same month a year earlier, per currency and per category.
   A **Suivi** tab compares that plan with reality: planned, actual and remaining per
   category and currency, with per-currency totals for the spending envelopes and the
   income goals under the table, over operation dates only, with refunds reducing their
@@ -35,10 +45,15 @@ Working today:
   the échéances with its registration in place; once recorded it joins the month's
   decisions. Above the list, per-currency totals show the month's prévisionnel —
   expected income, expenses and net, confirmed movements included, passed and dismissed
-  ones excluded.
+  ones excluded — and below it a six-month scheduler lays out the coming échéances from
+  the calendar (the simulated salary stays out of it: its calendar does not exist yet).
+  Series run monthly, quarterly or yearly and can be edited — moving the cadence or the
+  start date rebuilds the pending occurrences, and the start date locks once a decision
+  exists.
   An **Objectifs** tab tracks savings or repayment targets: a positive target amount in
-  one currency and a target date, with the current amount taken from a manual entry or
-  from the recorded balance of a linked account (the two are mutually exclusive).
+  one currency and a target date, with the current amount taken from the recorded
+  balance of a linked account or from a manual starting amount completed by a dated
+  contribution log (never ledger transactions).
   Progress is shown as an amount and a percentage, with the remaining and the monthly
   contribution — remaining divided by the whole months left, rounded half-up on cents —
   and a deadline that has passed or a reached target states why no contribution is
@@ -46,7 +61,8 @@ Working today:
   converted (a linked account must match the goal's currency).
   Above the goals, a **seuil d'épargne conseillé** states the cushion a savings account
   should hold: six months of expected expenses (current month included) summed from the
-  recurring series of the Prévisions tab, per currency and never stored. It reads the
+  recurring series of the Prévisions tab, per currency and never stored, with a runway
+  in months next to it. It reads the
   recorded balance of the accounts typed as savings — an unrecorded account stays
   unknown, never zero.
   A **Salaire** tab simulates earnings from an hourly rate: one click on the calendar
@@ -54,10 +70,24 @@ Working today:
   records the month's simulated amount (planned and worked days, each counted once) as
   one income entry, in a default « Salaire » category — nothing is written before that
   click.
+  A **Comptes** tab manages the reference data: recorded balances and the projected
+  end-of-month balance per account (recorded balance + the month's pending occurrences,
+  never the simulated salary), account rename/retype (the currency only while the
+  account is empty), reversible archiving, and category rename, merge (repoints
+  transactions, series and budgets, counting deleted duplicates out loud) and deletion
+  with each category's usage shown before the click.
+  A **CSV import** page (`/budget/import`) is the deliberate manual alternative to a
+  bank connector: the file is parsed in the browser, the columns are mapped on a
+  preview (signed amount or debit/credit pair, day-first French dates, parentheses for
+  negatives), duplicates are skipped on request, and only the normalised rows reach a
+  Server Action that validates everything again — nothing is uploaded before the
+  preview, and nothing is sent to a third party.
   Submitted values stay in the transaction and cashflow forms, so a second line is a
   small edit; the one-shot forms (account, category, property, password) clear themselves.
-- Alerts: an **Alertes** page watches five deterministic rules — low account balance,
-  budget overrun, expense above a threshold, stale synchronisation, overdue property
+- Alerts: an **Alertes** page watches six deterministic rules — low account balance,
+  budget overrun, budget threshold (the preventive one, below 100 % of an envelope,
+  resolved when the overrun takes over), expense above a threshold, stale synchronisation,
+  overdue property
   cashflow — each with its own configurable threshold and an explanation spelled out
   next to the setting. The engine runs on demand (opening the page or the dashboard),
   and the dashboard shows a banner as soon as an alert is active. Every alert states the
@@ -66,7 +96,9 @@ Working today:
   writes to the ledger automatically. Missing data is never treated as an anomaly: an
   account with no operation, a never-synced connection or a partially-read month keeps
   the rule quiet.
-- CSV exports: transactions (month + account/category/type/text filters), budgets
+- CSV exports: transactions (a month by default, `?year=YYYY` for a year or `?all=1`
+  for every month, plus account/category/type/text/reconciliation filters and a
+  `pointe_le` column), budgets
   (month), goals and alerts (status filter), plus the properties file — all behind the
   session, `no-store`, formula-neutralised, and bounded at 10 000 rows rather than
   streamed (the decision is documented in the architecture notes). An unknown value
@@ -83,14 +115,12 @@ Working today:
 
 Not implemented yet:
 
-- The budget view is a table, not an editable grid: correcting an operation means reopening it
-  in the entry form, not typing in the cell. Transactions, monthly budgets and goals can be edited
-  and deleted; accounts, categories and properties can still only be created.
-- Accounts, categories and properties cannot be deleted yet; only transactions,
-  budgets and goals can.
+- Properties and cashflow entries cannot be edited or deleted from the interface yet
+  (transactions, budgets, goals, recurring series, accounts and categories all can).
 - A scheduler entry point for automatic synchronisation (the function exists and
   is idempotent; the trigger is not shipped).
-- Bank connection, payments, accounting, tax advice — permanently out of scope.
+- Bank connection, payments, accounting, tax advice — permanently out of scope (the
+  CSV import is manual on purpose).
 - Document storage.
 
 ## Prerequisites

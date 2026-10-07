@@ -8,10 +8,11 @@ import {
   tdClass,
   thClass,
 } from "@/components/ui";
-import { formatDateOnly, formatInstant, formatMonthLabel, monthRange, parseMonthKey, toDateOnlyString } from "@/lib/dates";
+import { formatDateOnly, formatInstant, formatMonthLabel, monthKeysFrom, monthRange, parseMonthKey, shiftMonthKey, toDateOnlyString } from "@/lib/dates";
 import { DEFAULT_CURRENCY, formatMoney } from "@/lib/money";
 import {
   ensureRecurringOccurrences,
+  findRecurringEntry,
   findSalarySetting,
   findTransactionByExternalRef,
   listAccounts,
@@ -22,8 +23,11 @@ import {
 } from "@/modules/budget/repository";
 import {
   OCCURRENCE_STATUS_LABELS,
+  plannedContributions,
+  RECURRENCE_FREQUENCY_LABELS,
   signedForecastAmount,
   summariseForecastMonth,
+  toRecurringEntryFormInitialValues,
   type ForecastContribution,
   type ForecastType,
   type RecurringOccurrenceStatus,
@@ -64,10 +68,13 @@ const STATUS_TONES: Record<
 export async function ForecastSection({
   userId,
   monthKey,
+  editRecurringId,
 }: {
   userId: string;
   /** `YYYY-MM`, the month shared by every tab. */
   monthKey: string;
+  /** `?editRecurring=`, an identifier to look up: a foreign one finds nothing. */
+  editRecurringId?: string;
 }) {
   const { year, month } = parseMonthKey(monthKey);
   const range = monthRange(year, month);
@@ -75,7 +82,7 @@ export async function ForecastSection({
 
   await ensureRecurringOccurrences(userId, year, month);
 
-  const [entries, occurrences, accounts, categories, salarySetting, workDays, salaryBooking] =
+  const [entries, occurrences, accounts, categories, salarySetting, workDays, salaryBooking, editTarget] =
     await Promise.all([
       listRecurringEntries(userId),
       listRecurringOccurrences(userId, { from: range.start, to: range.end }),
@@ -86,7 +93,11 @@ export async function ForecastSection({
       // and the booking recompute the same figures from the same rows.
       listWorkDays(userId, { from: range.start, to: range.end }),
       findTransactionByExternalRef(userId, salaryBookingRef(year, month)),
+      editRecurringId ? findRecurringEntry(userId, editRecurringId) : Promise.resolve(null),
     ]);
+
+  const entryEditing = editTarget;
+  const entryEditTargetIsHidden = Boolean(editRecurringId) && editTarget === null;
 
   const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
   const currencyByAccount = new Map(accounts.map((account) => [account.id, account.currency]));
@@ -145,6 +156,21 @@ export async function ForecastSection({
   }
 
   const forecastTotals = summariseForecastMonth(contributions);
+
+  // The scheduler looks at the months **after** the displayed one: six months of planned
+  // occurrences, computed from the series (nothing is materialised ahead of time). The
+  // salary is absent by design — its amount follows a calendar that does not exist yet.
+  const upcomingMonths = monthKeysFrom(shiftMonthKey(monthKey, 1), 6).map((key) => {
+    const parsed = parseMonthKey(key);
+
+    return {
+      key,
+      label: formatMonthLabel(parsed.year, parsed.month),
+      totals: summariseForecastMonth(
+        plannedContributions(entries, parsed.year, parsed.month, currencyByAccount),
+      ),
+    };
+  });
 
   // "Today" is the UTC calendar day, like every date-only value in the project: marking
   // an occurrence late cannot shift because of a display time zone.
@@ -451,13 +477,38 @@ export async function ForecastSection({
 
       <Card
         title="Séries récurrentes"
-        description="Une série décrit une recette ou une dépense attendue — loyer, abonnement, salaire. Elle n'écrit rien dans le budget : chaque mois, elle alimente la liste des échéances à traiter, et le montant se confirme dans la devise du compte, sans conversion. Fréquence mensuelle."
+        description="Une série décrit une recette ou une dépense attendue — loyer, abonnement, taxe, salaire. Elle n'écrit rien dans le budget : chaque mois, elle alimente la liste des échéances à traiter, et le montant se confirme dans la devise du compte, sans conversion. Cadence mensuelle, trimestrielle ou annuelle."
       >
-        <RecurringEntryForm
-          accounts={accounts}
-          categories={categories}
-          defaultStartDate={`${monthKey}-01`}
-        />
+        {entryEditTargetIsHidden ? (
+          <div className="mb-4">
+            <Notice tone="warning">
+              La série demandée n&apos;existe plus, ou ne fait pas partie de vos données :
+              le formulaire reste en mode création.
+            </Notice>
+          </div>
+        ) : null}
+
+        {entryEditing ? (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm font-medium">
+              Modifier la série « {entryEditing.label} »
+            </p>
+            <RecurringEntryForm
+              key={entryEditing.id}
+              accounts={accounts}
+              categories={categories}
+              defaultStartDate={`${monthKey}-01`}
+              editing={toRecurringEntryFormInitialValues(entryEditing)}
+              cancelHref={`/budget?month=${monthKey}&tab=forecast`}
+            />
+          </div>
+        ) : (
+          <RecurringEntryForm
+            accounts={accounts}
+            categories={categories}
+            defaultStartDate={`${monthKey}-01`}
+          />
+        )}
 
         {entries.length === 0 ? (
           <div className="mt-4">
@@ -481,6 +532,9 @@ export async function ForecastSection({
                     Montant
                   </th>
                   <th scope="col" className={thClass}>
+                    Fréquence
+                  </th>
+                  <th scope="col" className={thClass}>
                     Compte
                   </th>
                   <th scope="col" className={thClass}>
@@ -502,11 +556,21 @@ export async function ForecastSection({
                   const currency = currencyByAccount.get(entry.accountId) ?? DEFAULT_CURRENCY;
 
                   return (
-                    <tr key={entry.id}>
+                    <tr
+                      key={entry.id}
+                      className={
+                        entryEditing?.id === entry.id
+                          ? "bg-amber-50 dark:bg-amber-950/30"
+                          : undefined
+                      }
+                    >
                       <td className={tdClass}>{entry.label}</td>
                       <td className={tdClass}>{TYPE_LABELS[entry.type]}</td>
                       <td className={`${tdClass} whitespace-nowrap text-right tabular-nums`}>
                         {formatMoney({ amount: signedForecastAmount(entry.type, entry.amount), currency })}
+                      </td>
+                      <td className={tdClass}>
+                        {RECURRENCE_FREQUENCY_LABELS[entry.frequency]}
                       </td>
                       <td className={tdClass}>{entry.accountName}</td>
                       <td className={tdClass}>{entry.categoryName ?? "Sans catégorie"}</td>
@@ -517,7 +581,15 @@ export async function ForecastSection({
                         {entry.endDate ? formatDateOnly(entry.endDate) : "—"}
                       </td>
                       <td className={tdClass}>
-                        <DeleteRecurringButton entryId={entry.id} label={entry.label} />
+                        <div className="flex flex-col items-start gap-1">
+                          <Link
+                            href={`/budget?month=${monthKey}&tab=forecast&editRecurring=${entry.id}`}
+                            className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                          >
+                            Modifier
+                          </Link>
+                          <DeleteRecurringButton entryId={entry.id} label={entry.label} />
+                        </div>
                       </td>
                     </tr>
                   );
@@ -531,6 +603,75 @@ export async function ForecastSection({
               et s&apos;arrête par sa date de fin.
             </p>
           </div>
+        )}
+      </Card>
+
+      <Card
+        title="Échéancier des 6 prochains mois"
+        description="Les échéances à venir des séries, calculées à partir du calendrier — rien n'est matérialisé d'avance, et seules les séries qui couvrent le mois apparaissent. Le salaire simulé n'y figure pas : il dépend d'un calendrier qui n'existe pas encore. Aucune devise n'est convertie."
+      >
+        {entries.length === 0 ? (
+          <Notice tone="info">
+            Aucune série : l&apos;échéancier se remplira dès la première série définie.
+          </Notice>
+        ) : (
+          <TableShell caption="Échéancier des 6 prochains mois">
+            <thead>
+              <tr>
+                <th scope="col" className={thClass}>
+                  Mois
+                </th>
+                <th scope="col" className={thClass}>
+                  Devise
+                </th>
+                <th scope="col" className={`${thClass} text-right`}>
+                  Recettes prévues
+                </th>
+                <th scope="col" className={`${thClass} text-right`}>
+                  Dépenses prévues
+                </th>
+                <th scope="col" className={`${thClass} text-right`}>
+                  Solde
+                </th>
+                <th scope="col" className={`${thClass} text-right`}>
+                  Échéances
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {upcomingMonths.map((upcoming) =>
+                upcoming.totals.length === 0 ? (
+                  <tr key={upcoming.key}>
+                    <td className={tdClass}>{upcoming.label}</td>
+                    <td className={`${tdClass} text-zinc-500 dark:text-zinc-400`} colSpan={5}>
+                      Aucune échéance prévue
+                    </td>
+                  </tr>
+                ) : (
+                  upcoming.totals.map((totals) => (
+                    <tr key={`${upcoming.key}|${totals.currency}`}>
+                      <td className={tdClass}>{upcoming.label}</td>
+                      <td className={tdClass}>{totals.currency}</td>
+                      <td className={`${tdClass} whitespace-nowrap text-right tabular-nums`}>
+                        {formatMoney({ amount: totals.income, currency: totals.currency })}
+                      </td>
+                      <td className={`${tdClass} whitespace-nowrap text-right tabular-nums`}>
+                        {formatMoney({ amount: totals.expenses, currency: totals.currency })}
+                      </td>
+                      <td
+                        className={`${tdClass} whitespace-nowrap text-right tabular-nums ${
+                          totals.net.isNegative() ? "text-rose-700 dark:text-rose-400" : ""
+                        }`}
+                      >
+                        {formatMoney({ amount: totals.net, currency: totals.currency })}
+                      </td>
+                      <td className={`${tdClass} text-right tabular-nums`}>{totals.count}</td>
+                    </tr>
+                  ))
+                ),
+              )}
+            </tbody>
+          </TableShell>
         )}
       </Card>
     </>

@@ -268,3 +268,48 @@ describe("goalInputSchema", () => {
     expect(goalUpdateSchema.safeParse({ ...valid, id: "  " }).success).toBe(false);
   });
 });
+
+describe("computeGoalProgress with contributions", () => {
+  it("adds the contributions to the manual starting amount", () => {
+    const progress = computeGoalProgress(goal({ currentAmount: new Decimal("300") }), null, {
+      now: NOW,
+      contributionSum: new Decimal("150"),
+    });
+
+    expect(progress.kind).toBe("KNOWN");
+    if (progress.kind !== "KNOWN") {
+      return;
+    }
+
+    expect(progress.current.toFixed(2)).toBe("450.00");
+    expect(progress.remaining.toFixed(2)).toBe("550.00");
+    expect(progress.percentage.toFixed(1)).toBe("45.0");
+  });
+
+  it("reads the contributions alone when the goal has no starting amount", () => {
+    const progress = computeGoalProgress(goal(), null, {
+      now: NOW,
+      contributionSum: new Decimal("200"),
+    });
+
+    expect(progress.kind).toBe("KNOWN");
+    expect(progress.kind === "KNOWN" && progress.current.toFixed(2)).toBe("200.00");
+  });
+
+  it("stays unknown without any amount and without contributions", () => {
+    const progress = computeGoalProgress(goal(), null, { now: NOW, contributionSum: null });
+
+    expect(progress.kind).toBe("UNKNOWN");
+  });
+
+  it("ignores contributions on an account-linked goal: the balance is the single source", () => {
+    const progress = computeGoalProgress(
+      goal({ accountId: "account-1" }),
+      new Decimal("800"),
+      { now: NOW, contributionSum: new Decimal("150") },
+    );
+
+    expect(progress.kind).toBe("KNOWN");
+    expect(progress.kind === "KNOWN" && progress.current.toFixed(2)).toBe("800.00");
+  });
+});

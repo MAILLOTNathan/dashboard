@@ -6,9 +6,11 @@ import {
   decisionBlockedReason,
   forecastOccurrenceRef,
   occurrenceDatesForMonth,
+  plannedContributions,
   plannedOccurrences,
   recurringEntryInputSchema,
   signedForecastAmount,
+  startDateChangeRefusedReason,
   summariseForecastMonth,
   type ForecastContribution,
   type RecurringEntryRecord,
@@ -280,5 +282,89 @@ describe("recurringEntryInputSchema", () => {
     });
 
     expect(parsed.success).toBe(false);
+  });
+});
+
+describe("quarterly and yearly cadences", () => {
+  it("occurs every third month, counted from the start month", () => {
+    const series = entry({ frequency: "QUARTERLY", startDate: day(2026, 2, 15) });
+
+    // February, May, August, November — the start month anchors the cadence.
+    expect(daysOf(occurrenceDatesForMonth(series, 2026, 2))).toEqual(["2026-02-15"]);
+    expect(occurrenceDatesForMonth(series, 2026, 3)).toEqual([]);
+    expect(occurrenceDatesForMonth(series, 2026, 4)).toEqual([]);
+    expect(daysOf(occurrenceDatesForMonth(series, 2026, 5))).toEqual(["2026-05-15"]);
+    expect(daysOf(occurrenceDatesForMonth(series, 2026, 11))).toEqual(["2026-11-15"]);
+    expect(occurrenceDatesForMonth(series, 2026, 12)).toEqual([]);
+    // The cadence crosses the year: February 2027 is aligned again.
+    expect(daysOf(occurrenceDatesForMonth(series, 2027, 2))).toEqual(["2027-02-15"]);
+  });
+
+  it("occurs in the start month only, once a year", () => {
+    const series = entry({ frequency: "YEARLY", startDate: day(2026, 9, 30) });
+
+    expect(daysOf(occurrenceDatesForMonth(series, 2026, 9))).toEqual(["2026-09-30"]);
+    expect(occurrenceDatesForMonth(series, 2026, 10)).toEqual([]);
+    expect(daysOf(occurrenceDatesForMonth(series, 2027, 9))).toEqual(["2027-09-30"]);
+  });
+
+  it("keeps the clamp and the bounds on the other cadences", () => {
+    const series = entry({
+      frequency: "QUARTERLY",
+      startDate: day(2026, 1, 31),
+      endDate: day(2026, 4, 15),
+    });
+
+    // April is aligned but its clamped candidate (the 30th) falls after the inclusive
+    // end: the series is over.
+    expect(occurrenceDatesForMonth(series, 2026, 4)).toEqual([]);
+    expect(daysOf(occurrenceDatesForMonth(series, 2026, 1))).toEqual(["2026-01-31"]);
+  });
+});
+
+describe("startDateChangeRefusedReason", () => {
+  it("allows the change until the first decision", () => {
+    expect(startDateChangeRefusedReason(0)).toBeNull();
+  });
+
+  it("locks the start date once a decision exists", () => {
+    expect(startDateChangeRefusedReason(2)).toMatch(/date de début/);
+  });
+});
+
+describe("plannedContributions", () => {
+  it("marks every planned occurrence pending, in the account's currency", () => {
+    const entries = [
+      entry({ id: "entry-1", accountId: "account-1" }),
+      entry({
+        id: "entry-2",
+        accountId: "account-2",
+        type: "INCOME",
+        label: "Salaire",
+        startDate: day(2026, 1, 27),
+      }),
+    ];
+    const currencyByAccount = new Map([
+      ["account-1", "EUR" as const],
+      ["account-2", "USD" as const],
+    ]);
+
+    const contributions = plannedContributions(entries, 2026, 2, currencyByAccount);
+
+    expect(contributions).toHaveLength(2);
+    expect(contributions[0]).toMatchObject({ currency: "EUR", type: "EXPENSE", status: "PENDING" });
+    expect(contributions[0].amount.toFixed(2)).toBe("950.00");
+    expect(contributions[1]).toMatchObject({ currency: "USD", type: "INCOME" });
+  });
+
+  it("falls back to the default currency for an unknown account", () => {
+    const contributions = plannedContributions(
+      [entry()],
+      2026,
+      2,
+      new Map(),
+    );
+
+    expect(contributions[0].currency).toBe("EUR");
   });
 });

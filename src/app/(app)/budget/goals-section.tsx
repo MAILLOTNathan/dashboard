@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Fragment } from "react";
 import {
   Badge,
   Card,
@@ -8,7 +9,7 @@ import {
   tdClass,
   thClass,
 } from "@/components/ui";
-import { formatDateOnly } from "@/lib/dates";
+import { formatDateOnly, toDateOnlyString } from "@/lib/dates";
 import { formatMoney, type Currency } from "@/lib/money";
 import {
   GOAL_STATUS_LABELS,
@@ -21,11 +22,17 @@ import {
 import {
   findGoal,
   listAccounts,
+  listGoalContributionsForOwner,
   listGoals,
   readAccountBalance,
+  sumGoalContributions,
 } from "@/modules/budget/repository";
 import { DeleteGoalButton } from "./delete-goal-button";
+import { GoalContributions, type GoalContributionRow } from "./goal-contributions";
 import { GoalForm } from "./goal-form";
+
+/** How many log entries the goals screen displays; the counters stay exact. */
+const CONTRIBUTION_LIST_LIMIT = 500;
 
 const STATUS_TONES: Record<GoalStatus, "neutral" | "positive" | "warning"> = {
   ACTIVE: "neutral",
@@ -110,12 +117,14 @@ function ContributionCell({ progress, currency }: { progress: GoalProgress; curr
  * "Objectifs" tab: savings or repayment goals, their progress and what the deadline asks.
  *
  * The section reads its own data and documents its rules in place: a goal's current
- * amount comes from a manual amount or from the recorded balance of a linked account
- * (the signed sum of its transactions). When neither is available, the progress shows
- * the reason instead of a zero — "nothing recorded" is not "nothing saved". The monthly
- * contribution is the remaining amount divided by the whole calendar months left,
- * rounded half-up on cents (documented in `docs/architecture/overview.md`), and it is
- * not defined once the deadline has passed or the goal is reached.
+ * amount comes from the recorded balance of a linked account (the signed sum of its
+ * transactions), or from a manual starting amount **plus the logged contributions**
+ * (`GoalContribution` rows — never ledger transactions). When neither is available, the
+ * progress shows the reason instead of a zero — "nothing recorded" is not "nothing
+ * saved". The monthly contribution is the remaining amount divided by the whole calendar
+ * months left, rounded half-up on cents (documented in
+ * `docs/architecture/overview.md`), and it is not defined once the deadline has passed
+ * or the goal is reached.
  */
 export async function GoalsSection({
   userId,
@@ -125,11 +134,30 @@ export async function GoalsSection({
   /** `?editGoal=`, an identifier to look up: a foreign one finds nothing. */
   editGoalId?: string;
 }) {
-  const [goals, accounts, editTarget] = await Promise.all([
+  const [goals, accounts, editTarget, contributionSums, contributionLog] = await Promise.all([
     listGoals(userId),
     listAccounts(userId),
     editGoalId ? findGoal(userId, editGoalId) : Promise.resolve(null),
+    sumGoalContributions(userId),
+    listGoalContributionsForOwner(userId, { take: CONTRIBUTION_LIST_LIMIT }),
   ]);
+
+  // The log arrives owner-wide and bounded (most recent first); the per-goal view is
+  // grouped here, and the exact counters come from the aggregate, never from the list.
+  const contributionsByGoal = new Map<string, GoalContributionRow[]>();
+  for (const contribution of contributionLog) {
+    const goal = goals.find((candidate) => candidate.id === contribution.goalId);
+    const list = contributionsByGoal.get(contribution.goalId) ?? [];
+    list.push({
+      id: contribution.id,
+      amountLabel: goal
+        ? formatMoney({ amount: contribution.amount, currency: goal.currency })
+        : contribution.amount.toFixed(2),
+      dateLabel: formatDateOnly(contribution.date),
+      note: contribution.note,
+    });
+    contributionsByGoal.set(contribution.goalId, list);
+  }
 
   // A stale or foreign identifier fills nothing and is reported, so the form never looks
   // like it silently lost the row.
@@ -151,15 +179,18 @@ export async function GoalsSection({
 
   const rows = goals.map((goal, index) => ({
     goal,
-    progress: computeGoalProgress(goal, balances[index] ?? null),
+    progress: computeGoalProgress(goal, balances[index] ?? null, {
+      contributionSum: contributionSums.get(goal.id)?.total ?? null,
+    }),
   }));
 
+  const today = toDateOnlyString(new Date());
   const listHref = "/budget?tab=goals";
 
   return (
     <Card
       title="Objectifs"
-      description="Un objectif est un montant cible dans une devise, à atteindre avant une échéance. Sa progression vient d'un montant saisi à la main ou du solde enregistré d'un compte lié — jamais des deux. Sans source, ou sans opération sur le compte lié, la progression est affichée comme inconnue, pas comme zéro. La contribution mensuelle est le reste divisé par les mois entiers restants, arrondie au centime (au demi supérieur) ; elle n'est plus définie après l'échéance ni une fois l'objectif atteint. Aucune conversion entre devises."
+      description="Un objectif est un montant cible dans une devise, à atteindre avant une échéance. Sa progression vient du solde enregistré d'un compte lié, ou d'un montant de départ complété par les contributions journalisées (des écritures de suivi, jamais des opérations de compte). Sans source, ou sans opération sur le compte lié, la progression est affichée comme inconnue, pas comme zéro. La contribution mensuelle est le reste divisé par les mois entiers restants, arrondie au centime (au demi supérieur) ; elle n'est plus définie après l'échéance ni une fois l'objectif atteint. Aucune conversion entre devises."
       actions={
         <Link
           href="/api/export/goals"
@@ -230,24 +261,25 @@ export async function GoalsSection({
             </thead>
             <tbody>
               {rows.map(({ goal, progress }) => (
-                <tr
-                  key={goal.id}
-                  className={
-                    goalEditing?.id === goal.id ? "bg-amber-50 dark:bg-amber-950/30" : undefined
-                  }
-                >
-                  <td className={tdClass}>
-                    <span className="flex flex-col">
-                      <span className="font-medium">{goal.name}</span>
-                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                        {goal.accountName
-                          ? `Compte lié : ${goal.accountName} (${goal.currency})`
-                          : goal.currentAmount === null
-                            ? `Devise ${goal.currency} · aucune source : progression inconnue`
-                            : `Montant saisi à la main (${goal.currency})`}
+                <Fragment key={goal.id}>
+                  <tr
+                    className={
+                      goalEditing?.id === goal.id ? "bg-amber-50 dark:bg-amber-950/30" : undefined
+                    }
+                  >
+                    <td className={tdClass}>
+                      <span className="flex flex-col">
+                        <span className="font-medium">{goal.name}</span>
+                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                          {goal.accountName
+                            ? `Compte lié : ${goal.accountName} (${goal.currency})`
+                            : goal.currentAmount === null &&
+                                (contributionSums.get(goal.id)?.count ?? 0) === 0
+                              ? `Devise ${goal.currency} · aucune source : progression inconnue`
+                              : `Montant de départ + contributions (${goal.currency})`}
+                        </span>
                       </span>
-                    </span>
-                  </td>
+                    </td>
                   <td className={tdClass}>
                     <Badge tone={STATUS_TONES[goal.status]}>
                       {GOAL_STATUS_LABELS[goal.status]}
@@ -281,6 +313,32 @@ export async function GoalsSection({
                     </div>
                   </td>
                 </tr>
+
+                {goal.accountId === null ? (
+                  <tr>
+                    <td colSpan={7} className="border-b border-zinc-100 pb-3 dark:border-zinc-800">
+                      <GoalContributions
+                        goalId={goal.id}
+                        contributions={contributionsByGoal.get(goal.id) ?? []}
+                        totalCount={contributionSums.get(goal.id)?.count ?? 0}
+                        totalLabel={
+                          (contributionSums.get(goal.id)?.count ?? 0) === 0
+                            ? "aucune contribution"
+                            : formatMoney({
+                                amount: contributionSums.get(goal.id)!.total,
+                                currency: goal.currency,
+                              })
+                        }
+                        truncated={
+                          (contributionsByGoal.get(goal.id)?.length ?? 0) <
+                          (contributionSums.get(goal.id)?.count ?? 0)
+                        }
+                        today={today}
+                      />
+                    </td>
+                  </tr>
+                ) : null}
+                </Fragment>
               ))}
             </tbody>
           </TableShell>

@@ -253,3 +253,51 @@ describe("buildSavingsThresholds", () => {
     ).toEqual([]);
   });
 });
+
+describe("runway months", () => {
+  it("reads the recorded balance in months of expected expenses", () => {
+    const [threshold] = buildSavingsThresholds({
+      entries: [entry()],
+      currencyByAccount: EUR_ACCOUNT,
+      savingsAccounts: [savings({ balance: new Decimal("3000") })],
+      months: savingsWindow(NOW),
+    });
+
+    // Threshold 6 × 950 = 5 700; runway = 3 000 × 6 / 5 700 = 3.157… → 3.2.
+    expect(threshold.expectedTotal.toFixed(2)).toBe("5700.00");
+    expect(threshold.runwayMonths?.toFixed(1)).toBe("3.2");
+  });
+
+  it("reads 6,0 months when the cushion is exactly the threshold", () => {
+    const [threshold] = buildSavingsThresholds({
+      entries: [entry()],
+      currencyByAccount: EUR_ACCOUNT,
+      savingsAccounts: [savings({ balance: new Decimal("5700") })],
+      months: savingsWindow(NOW),
+    });
+
+    expect(threshold.runwayMonths?.toFixed(1)).toBe("6.0");
+  });
+
+  it("stays null while the balance is unknown — never a 0-month runway", () => {
+    const [threshold] = buildSavingsThresholds({
+      entries: [entry()],
+      currencyByAccount: EUR_ACCOUNT,
+      savingsAccounts: [savings({ transactionCount: 0, balance: new Decimal(0) })],
+      months: savingsWindow(NOW),
+    });
+
+    expect(threshold.runwayMonths).toBeNull();
+  });
+
+  it("reads a zero runway for a non-positive balance: the debt is told by the amount", () => {
+    const [threshold] = buildSavingsThresholds({
+      entries: [entry()],
+      currencyByAccount: EUR_ACCOUNT,
+      savingsAccounts: [savings({ balance: new Decimal("-50") })],
+      months: savingsWindow(NOW),
+    });
+
+    expect(threshold.runwayMonths?.toFixed(1)).toBe("0.0");
+  });
+});

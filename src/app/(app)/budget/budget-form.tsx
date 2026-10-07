@@ -6,7 +6,7 @@ import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { FormFeedback, SubmitButton, useRecordedAction } from "@/components/forms";
 import { Field, inputClass } from "@/components/ui";
-import { DEFAULT_CURRENCY, SUPPORTED_CURRENCIES } from "@/lib/money";
+import { DEFAULT_CURRENCY, SUPPORTED_CURRENCIES, type Currency } from "@/lib/money";
 import {
   budgetInputSchema,
   type BudgetFormInitialValues,
@@ -36,12 +36,24 @@ const KIND_LABELS: Record<CategoryKind, string> = {
 export function BudgetForm({
   categories,
   defaultMonth,
+  defaultCategoryId,
+  defaultCurrency,
+  defaultAmount,
+  averageHint,
   editing = null,
   cancelHref,
 }: {
   categories: CategorySummary[];
   /** `YYYY-MM` of the month currently displayed by the page. */
   defaultMonth: string;
+  /** Pre-selected category, when the form is opened from a suggestion. */
+  defaultCategoryId?: string;
+  /** Pre-selected currency, when the form is opened from a suggestion. */
+  defaultCurrency?: Currency;
+  /** Pre-filled amount — the suggested monthly average, never a stored value. */
+  defaultAmount?: string;
+  /** Explains where a pre-filled amount comes from, when it does. */
+  averageHint?: string;
   /**
    * The row being corrected, already reduced to plain strings by the server: a `Decimal`
    * cannot cross into this component at all.
@@ -55,10 +67,10 @@ export function BudgetForm({
   const form = useForm<BudgetInput>({
     resolver: zodResolver(budgetInputSchema, undefined, { raw: true }),
     defaultValues: {
-      categoryId: editing?.categoryId ?? categories[0]?.id ?? "",
+      categoryId: editing?.categoryId ?? defaultCategoryId ?? categories[0]?.id ?? "",
       month: editing?.month ?? defaultMonth,
-      currency: editing?.currency ?? DEFAULT_CURRENCY,
-      amount: editing?.amount ?? "",
+      currency: editing?.currency ?? defaultCurrency ?? DEFAULT_CURRENCY,
+      amount: editing?.amount ?? defaultAmount ?? "",
     },
   });
 
@@ -123,7 +135,10 @@ export function BudgetForm({
         label="Montant prévu"
         htmlFor="budget-amount"
         error={errors.amount?.message}
-        hint="Positif : « 300 » pour un budget de 300 €."
+        hint={
+          averageHint ??
+          "Positif : « 300 » pour un budget de 300 €."
+        }
       >
         <input
           id="budget-amount"

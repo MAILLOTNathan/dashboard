@@ -14,7 +14,7 @@ import {
 import { saveAlertRulesAction } from "./actions";
 
 /**
- * The five rules, each with its thresholds and what it watches.
+ * The six rules, each with its thresholds and what it watches.
  *
  * The explanations are part of the form, not a tooltip: a threshold whose meaning has to
  * be guessed is a threshold nobody dares to set. An empty field means "use the default",
@@ -116,6 +116,40 @@ export function RulesForm({ defaults }: { defaults: AlertRulesFormValues }) {
               autoComplete="off"
               placeholder="0"
               {...form.register("budgetOverrun.thresholdPercent")}
+            />
+          </Field>
+        </div>
+      </fieldset>
+
+      <fieldset className="rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
+        <legend className="px-1 text-sm font-medium">{ALERT_KIND_LABELS.BUDGET_THRESHOLD}</legend>
+        <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
+          {ALERT_RULE_DESCRIPTIONS.BUDGET_THRESHOLD}
+        </p>
+
+        <div className="grid gap-3 sm:grid-cols-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="h-4 w-4"
+              {...form.register("budgetThreshold.enabled")}
+            />
+            Surveillance active
+          </label>
+
+          <Field
+            label="Seuil d'alerte (% du budget)"
+            htmlFor="alert-threshold-percent"
+            error={errors.budgetThreshold?.thresholdPercent?.message}
+            hint="Vide : 80 — l'alerte se résout d'elle-même si le dépassement prend le relais."
+          >
+            <input
+              id="alert-threshold-percent"
+              className={inputClass}
+              inputMode="decimal"
+              autoComplete="off"
+              placeholder="80"
+              {...form.register("budgetThreshold.thresholdPercent")}
             />
           </Field>
         </div>

@@ -18,10 +18,13 @@ import { deleteTransactionAction } from "./actions";
 export function DeleteTransactionButton({
   transactionId,
   label,
+  grouped = false,
 }: {
   transactionId: string;
   /** Shown in the confirmation so the row is unambiguous. */
   label: string;
+  /** True when the row belongs to a linked transfer: both legs disappear together. */
+  grouped?: boolean;
 }) {
   const router = useRouter();
   const [confirming, setConfirming] = useState(false);
@@ -52,10 +55,15 @@ export function DeleteTransactionButton({
           }}
           className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
         >
-          Supprimer
+          {grouped ? "Supprimer le virement" : "Supprimer"}
         </button>
         {result && result.status !== "ok" ? (
           <span className="text-xs text-rose-700 dark:text-rose-400" role="alert">
+            {result.message}
+          </span>
+        ) : null}
+        {result?.status === "ok" && result.message ? (
+          <span className="max-w-56 text-xs text-zinc-600 dark:text-zinc-400">
             {result.message}
           </span>
         ) : null}
@@ -65,7 +73,11 @@ export function DeleteTransactionButton({
 
   return (
     <span className="flex flex-col items-start gap-1">
-      <span className="text-xs">Supprimer « {label} » ?</span>
+      <span className="text-xs">
+        {grouped
+          ? `Supprimer le virement lié à « ${label} » et ses deux mouvements ?`
+          : `Supprimer « ${label} » ?`}
+      </span>
       <span className="flex gap-1">
         <button
           type="button"

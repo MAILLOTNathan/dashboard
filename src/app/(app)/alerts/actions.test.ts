@@ -31,6 +31,7 @@ const OWNER = { id: "owner-1", email: "owner@example.test", name: null };
 const VALID_RULES = {
   lowBalance: { enabled: true, thresholdAmount: "100,00", thresholdCurrency: "EUR" },
   budgetOverrun: { enabled: true, thresholdPercent: "10" },
+  budgetThreshold: { enabled: true, thresholdPercent: "80" },
   unusualExpense: { enabled: true, thresholdAmount: "500", thresholdCurrency: "EUR" },
   staleIntegration: { enabled: true, thresholdDays: "2" },
   overdueEvent: { enabled: true, thresholdDays: "0" },
@@ -110,6 +111,7 @@ describe("saveAlertRulesAction", () => {
     expect(configs.map((config) => config.kind)).toEqual([
       "LOW_BALANCE",
       "BUDGET_OVERRUN",
+      "BUDGET_THRESHOLD",
       "UNUSUAL_EXPENSE",
       "STALE_INTEGRATION",
       "OVERDUE_EVENT",
@@ -124,8 +126,11 @@ describe("saveAlertRulesAction", () => {
     expect(overrun.thresholdPercent?.toFixed(2)).toBe("10.00");
     expect(overrun.thresholdAmount).toBeNull();
 
-    expect(configs[3].thresholdDays).toBe(2);
-    expect(configs[4].thresholdDays).toBe(0);
+    const threshold = configs[2];
+    expect(threshold.thresholdPercent?.toFixed(2)).toBe("80.00");
+
+    expect(configs[4].thresholdDays).toBe(2);
+    expect(configs[5].thresholdDays).toBe(0);
     expect(refreshAlertsMock).toHaveBeenCalledWith(OWNER.id);
   });
 

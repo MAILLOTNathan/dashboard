@@ -94,13 +94,34 @@ asked for: a cascade here would silently change what a property is worth.
   mixing currencies raises an error instead of inventing an exchange rate.
 - **Imports** are made re-runnable by a unique constraint on
   `(accountId, externalRef)`: replaying an import fails loudly instead of
-  duplicating a line.
+  duplicating a line. The manual CSV import (page « Importer un CSV », see below) uses
+  the `import:` prefix so its references can never collide with an internal one
+  (`salary:`, `forecast:`), and its duplicate rule is *same operation date, same label
+  (whitespace collapsed), same amount* — checked against the account's rows and within
+  the file itself, and applied only when the owner asks for it.
+- **Transfers** carry their sign like every other amount. A transfer entered through the
+  « Virement entre comptes » form writes **two linked movements** in one database
+  transaction: the source leg negative, the destination leg positive, both sharing a
+  `transferGroupId`, both in the accounts' currency (a linked transfer never crosses
+  currencies). The pair is one thing: each leg can be ticked against its own statement,
+  editing one leg alone is refused (the two halves could diverge), and deleting either
+  leg deletes both, with the confirmation and the answer saying so. A single-leg
+  transfer stays possible (money sent somewhere untracked): it is simply typed by hand
+  and carries no group.
+- **Reconciliation** is a per-row day (`reconciledAt`), set or cleared by the
+  « Pointer » button on the operations table: it records *the day the line was checked
+  against a bank statement* and never touches the amount, the date or the account. A
+  filter (toutes / non pointées / pointées) exists on the filters card and in the CSV
+  export (`pointe_le` column, empty when unchecked — a state, not a missing date).
 - **Categories** carry a kind (`INCOME` or `EXPENSE`), and a transaction may only use
   a category of its own kind — `categoryKindForTransactionType` is the single source
   of that rule, used by the form to filter the list and by the Server Action to refuse
   a replayed request. A `TRANSFER` takes no category at all: it moves money rather than
   spending it, so there is nothing to label — its amount still counts in the totals, by its
-  sign (see below).
+  sign (see below). Categories can be renamed, merged (same kind only: transactions,
+  series and budgets are repointed, budgets the target already covers are deleted and
+  counted out loud) and deleted — the management screen shows each category's usage
+  first, and a kind change is refused while anything references it.
 - **Budgets** are planned amounts for one category, one month and one currency. The
   amount is a positive magnitude: the category's kind says whether it is a spending
   envelope or an income target, and a plan of zero or less is refused rather than
@@ -122,27 +143,41 @@ asked for: a cascade here would silently change what a property is worth.
   Until that click the simulated amounts stay out of the totals.
 - **Recurring forecasts** describe an expected income or expense (rent, subscription,
   salary): a label, a positive magnitude, a direction, an account, an optional category,
-  a monthly cadence, a start date and an optional end date. A definition writes nothing
-  to the ledger. Opening the « Prévisions » tab materialises the month's occurrences
-  idempotently — the unique `(recurring, date)` and `skipDuplicates` make the write safe
-  to repeat, and a decided occurrence keeps its row, so it is never reset to pending or
-  offered twice. An occurrence falls on the start date's day of month, clamped to the
-  month's last day (the 31st → 28/29 February); the clamp does not propagate, so March
-  falls on the 31st again. Confirmation is the only door into the accounts: it reuses
+  a cadence (`MONTHLY`, `QUARTERLY`, `YEARLY`), a start date and an optional end date. A
+  definition writes nothing to the ledger. Opening the « Prévisions » tab materialises
+  the month's occurrences idempotently — the unique `(recurring, date)` and
+  `skipDuplicates` make the write safe to repeat, and a decided occurrence keeps its row,
+  so it is never reset to pending or offered twice. An occurrence falls on the start
+  date's day of month, clamped to the month's last day (the 31st → 28/29 February); the
+  clamp does not propagate, so March falls on the 31st again. A month that does not align
+  with the cadence (quarterly: every third month from the start month; yearly: the start
+  month) holds no occurrence. Confirmation is the only door into the accounts: it reuses
   the manual transaction path rule for rule, dates the entry on the **occurrence day**
   and stores the stable reference `forecast:{occurrenceId}`; « Passer » and « Écarter »
-  record a terminal decision with its date and write no transaction. Deleting a series
-  is refused while one of its occurrences carries a decision — that audit trail, and the
-  link to a confirmed transaction, outlives the series — so a series is stopped with its
-  end date rather than erased.
+  record a terminal decision with its date and write no transaction. A series can be
+  **edited** — label, amount, account, category, cadence, dates; moving the cadence or
+  the start date deletes the still-pending occurrences so they are re-materialised on the
+  new rule, and the start date is locked once a decision exists (that history is dated).
+  Deleting a series is refused while one of its occurrences carries a decision — that
+  audit trail, and the link to a confirmed transaction, outlives the series — so a series
+  is stopped with its end date rather than erased.
 - **Financial goals** are target amounts: a name, a positive target, one explicit currency,
   a target date and a status (`ACTIVE`, `ACHIEVED`, `ABANDONED`). The current amount comes
-  from exactly one source — a manual amount, or the **recorded balance** of one linked
-  account (the signed sum of its transactions) — and the two are mutually exclusive; a
-  goal may also carry neither, and its progress then reads « inconnue », never zero.
-  Linking is owner-scoped like every other lookup, and a linked account must be in the
-  goal's currency: the app refuses the link rather than converting. Goals are independent
-  of the monthly windows: they describe a horizon, not a month.
+  from one of two sources: the **recorded balance** of one linked account (the signed sum
+  of its transactions), or a **manual starting amount plus the logged contributions**.
+  The two are mutually exclusive; a goal may also carry neither, and its progress then
+  reads « inconnue », never zero. The contribution log (`GoalContribution`) holds dated
+  positive amounts and notes: it is a **log entry, not a ledger transaction** — it never
+  touches an account balance — and the goal's progress moves by exactly what is logged.
+  Linked goals take no contributions (the balance is the single source), and both are
+  owner-scoped like every other lookup; a linked account must be in the goal's currency:
+  the app refuses the link rather than converting. Goals are independent of the monthly
+  windows: they describe a horizon, not a month.
+- **Accounts** can be renamed, retyped and its currency changed only while the account
+  holds no transaction (the app never converts, and an account's history is written in
+  its currency). They are **archived**, never deleted: an archived account leaves the
+  entry forms and the alert engine and keeps its history readable; restoring clears the
+  stamp. Accounts and categories are managed in the « Comptes » tab.
 
 ## Documented indicator definitions
 
@@ -213,9 +248,10 @@ asked for: a cascade here would silently change what a property is worth.
 - Financial goals (budget page, « Objectifs » tab) — progress of a savings or repayment
   target, always shown as an amount **and** a percentage, with the currency explicit on
   every figure. The rules are fixed here so the table can be read without guessing:
-  - *current* — the manual amount when the goal carries one; otherwise the recorded
-    balance of the linked account (the signed sum of its transactions). An account with
-    no recorded transaction, or a goal with neither source, reads **unknown** with the
+  - *current* — the manual amount plus the logged contributions when the goal carries
+    them; otherwise the recorded balance of the linked account (the signed sum of its
+    transactions). A manual goal with neither an amount nor a contribution, or a goal
+    whose linked account has no recorded transaction, reads **unknown** with the
     reason displayed — never 0: "nothing recorded" is not "nothing saved". A real
     0,00 € (an account whose movements net to zero) is shown as 0,00 €.
   - *remaining* — target − current; negative when the goal is exceeded, so an over-target
@@ -248,6 +284,45 @@ asked for: a cascade here would silently change what a property is worth.
   - *progress* — savings ÷ threshold × 100, half-up to one decimal; *shortfall* —
     threshold − savings, negative when the cushion exceeds the threshold. A real zero
     balance stays a known zero: 0 % and the whole threshold to constitute.
+  - *runway* — how many months of expected expenses the recorded balance covers,
+    `savings × 6 ÷ threshold`, half-up to one decimal: 6,0 months means the full
+    cushion is there. A non-positive balance reads 0 — the debt is told by the amount —
+    and an unknown balance leaves the figure blank like the rest.
+- Comparison of periods (budget page, « Analyse » tab) — the displayed month against
+  the previous month and the same month one year earlier, per currency, using the same
+  `income` / `expenses` / `net` definitions as the totals cards above (transfers
+  included by their sign):
+  - a side with **no transaction at all** in that currency is not a zero month: it reads
+    « — » and no delta is computed against it;
+  - *net delta* — current net − previous net, signed (positive = the month improved);
+  - *net percent* — the delta divided by the **absolute value** of the previous net, one
+    decimal, so its sign follows the delta; `null` — displayed as no percentage — when
+    the previous net is exactly zero, because dividing by zero has no honest rate;
+  - the per-category detail of the displayed side of the ledger compares the three
+    periods category by category; a category absent from a month that was read entirely
+    is a real zero for that month, never "unknown";
+  - when any of the three period reads reaches its row bound, the whole comparison is
+    hidden with an explanation rather than shown partial: a truncated month would read
+    as a calmer month.
+- Rolling category averages (budget page, « Budgets » tab) — the display-only suggestion
+  used to help set an envelope: over the **three months before the displayed one** (a
+  running month is not an average yet), `computeCategoryAverages` sums each category's
+  actual — expenses positive, refunds reducing, income as received, per currency — and
+  divides by the **fixed** window length, empty months included, because "what does this
+  category cost per month" is the question a budget answers. `activeMonths` says how
+  many of the three actually hold rows. Transfers and uncategorised rows are skipped
+  (there is no category key to attach them to), the average is rounded half-up on cents,
+  and when the read reaches its bound the column shows "—" instead of a partial history.
+  The suggestion list opens the budget form pre-filled with the average — nothing is
+  stored until the form is submitted.
+- Projected balance (budget page, « Comptes » tab) — the end-of-month estimate per
+  account: **recorded balance + the month's pending occurrences** (the échéances the
+  Prévisions tab materialised and the owner has not decided yet; an already-confirmed
+  one is a real transaction and sits inside the balance already). The simulated salary is
+  deliberately not added: until it is booked, no account owns it, and guessing one would
+  be inventing data. On a past month the figure reads as "what was still to be processed".
+  An account with no recorded transaction keeps an **unknown** starting balance: its
+  projection stays "—" while the pending net is still told — nothing is made up from it.
 - Property totals — each cashflow entry counts once. When an entry is linked to
   a transaction, the transaction is the only source of the amount.
 - GitHub issues — only **open** issues and pull requests are kept, and only the
@@ -312,10 +387,10 @@ what this section is for.
 Alerts are **observations** about the owner's own data, produced by deterministic
 rules: a threshold, a comparison, an explanation. No rule writes to the ledger, and
 no machine learning or statistical heuristic runs in this first pass. The rules live
-next to what they read — `budget/alerts.ts` (low balance, budget overrun, unusual
-expense), `integrations/alerts.ts` (stale synchronisation), `real-estate/alerts.ts`
-(overdue event) — and every one of them is a pure function of its inputs and a clock,
-so a fixed date is enough to test it.
+next to what they read — `budget/alerts.ts` (low balance, budget overrun, budget
+threshold, unusual expense), `integrations/alerts.ts` (stale synchronisation),
+`real-estate/alerts.ts` (overdue event) — and every one of them is a pure function of
+its inputs and a clock, so a fixed date is enough to test it.
 
 The engine runs **server-side on demand**: the dashboard and the alert page each call
 one bounded evaluation pass while rendering (accounts with grouped balances, the
@@ -337,6 +412,13 @@ rather than accuse on half-read data.
   the exact percentage of the planned amount (default 0 → any overrun). Income targets
   are never "overrun". Refunds, transfers and uncategorised lines follow the Suivi
   rules, and rows in another currency are never mixed in.
+- *Budget threshold* — the preventive companion of the overrun, never a second voice on
+  the same situation: an expense row has reached the configured share of its planned
+  amount (default 80 %) **without being exceeded yet** (`overrun ≤ 0`, so exactly 100 %
+  still counts). The moment the first euro goes over, the threshold episode resolves and
+  the overrun alert opens. A refund-dominated envelope (negative actual) never fires it,
+  a month read in part stays silent like the overrun rule, and an untouched envelope does
+  not fire even a zero threshold.
 - *Unusual expense* — a single **expense** of the current month reaches or exceeds the
   threshold, in its currency. This is a fixed amount threshold, not an anomaly score.
   Transactions carrying an `externalRef` (a confirmed prévision, a salary booking) are
@@ -381,10 +463,45 @@ beside its fields.
   formula are neutralised.- Personal data is never placed in fixtures, screenshots or logs. Error messages
   persisted for display contain a code, never a token or a payload.
 
+## CSV import of bank statements
+
+The « Importer un CSV » page (`/budget/import`) is the deliberate manual alternative to a
+bank connector, which stays out of scope. The file **never leaves the browser**: it is
+read with `File.text()` and parsed locally by the pure helpers of
+`src/modules/budget/import.ts` (RFC 4180 essentials — quoted fields, escaped quotes,
+CR/LF, BOM, delimiter detection), the owner maps the columns on a preview, and only the
+normalised rows are submitted to a Server Action, which validates every field again — a
+browser preview is a comfort, never a permission.
+
+Rules, in one place:
+
+- **dates**: `YYYY-MM-DD`, or day-first French forms (`DD/MM/YYYY`, `DD/MM/YY` → 20YY,
+  `DD-MM-YYYY`, `DD.MM.YYYY`). Month-first forms are deliberately not guessed;
+- **amounts**: one signed `Montant` column, or a `Débit`/`Crédit` pair
+  (`credit − debit`); accounting parentheses `(45,90)` mean negative; a zero amount is
+  refused (nothing to record);
+- **direction**: the sign decides — negative becomes an `EXPENSE`, positive an `INCOME`.
+  An import never creates transfers;
+- **currency**: the destination account's, never the file's — the currency is never
+  asked twice;
+- **categories**: matched by exact name among the owner's categories of the matching
+  kind; unknown names leave the row uncategorised and are counted in the summary, never
+  invented;
+- **duplicates**: *same operation date, same label (whitespace collapsed), same amount*
+  — checked against the account's stored rows and within the file itself, only when the
+  owner ticks the box. A mapped reference column is stored as `externalRef =
+  import:{ref}`, so re-importing the same export keeps skipping the same lines even after
+  a label was corrected;
+- **bounds**: at most 2 000 rows per import (the page cuts and says so), a 2 MB file
+  limit, and the duplicate check reads at most 20 000 existing rows in the file's date
+  window — past that the import is refused with an explanation rather than checked
+  partially. Only active accounts can receive an import.
+
 ## Exports
 
 Four CSV exports leave the application, all through their own Route Handler:
-`/api/export/transactions` (month plus account, category, type and text filters),
+`/api/export/transactions` (a month by default, a whole year with `?year=YYYY`, every
+month with `?all=1`, plus account, category, type, text and reconciliation filters),
 `/api/export/budgets` (month), `/api/export/goals` (status filter) and
 `/api/export/alerts` (status filter); properties have their own since the first
 slice. They share the same guards: `requireApiUser()` first (401 JSON, no read), the
@@ -397,7 +514,9 @@ Two conventions of the data apply to the files. An **unknown value is an empty
 cell**, never a zero: a goal whose amount cannot be read exports blank numeric
 columns plus the reason in its `note` field. **Instants are ISO 8601 in UTC** (the
 alerts export), since a file loses the display time zone; calendar days stay
-`YYYY-MM-DD`. A malformed month falls back to the current one — `isValidMonthKey`
+`YYYY-MM-DD`. The transaction export carries the reconciliation day in its own
+`pointe_le` column — an empty cell is "not checked yet", a state, not a missing date —
+and a malformed month falls back to the current one — `isValidMonthKey`
 exists because `parseMonthKey` throws on `2026-13`, and a bad link must not crash a
 page.
 
@@ -468,11 +587,15 @@ still has open issues that were not seen.
 
 ## Not implemented in this base
 
-- No bank connector, no payment, no accounting or tax advice.
+- No bank connector, no payment, no accounting or tax advice. The CSV import is
+  manual and deliberate; nothing polls a bank.
 - No writing to GitHub or GitLab.
-- Transactions, accounts, categories, properties and cashflow entries can be
-  created from the pages; transactions can also be deleted. Editing a row in place,
-  and deleting the other kinds, are not implemented.
+- Transactions are editable **in place** on the operations table (Enter saves, Escape
+  cancels; notes stay in the full form) and creatable, duplicatable and deletable;
+  budgets, goals and recurring series can be edited and deleted; accounts can be
+  renamed, retyped, archived and restored; categories can be renamed, merged and
+  deleted, each with its usage counts shown first. Properties and cashflow entries
+  still cannot be edited or deleted from the interface.
 - No document/attachment storage.
 - The integrations page triggers a synchronisation on demand; no scheduler entry
   point (cron unit, platform job) ships with the repository yet.
