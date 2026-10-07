@@ -70,6 +70,56 @@ enum SyncRunStatus {
   FAILED
 }
 
+/// The two levels of the salary calendar: a day is planned (the simulated budget),
+/// then really worked (the amount actually earned). One state at a time.
+enum WorkDayStatus {
+  PLANNED
+  WORKED
+}
+
+/// How often a recurring definition occurs. Only `MONTHLY` is offered today:
+/// the column exists so another cadence would be a migration, not a redesign.
+enum RecurrenceFrequency {
+  MONTHLY
+}
+
+/// The lifecycle of one materialised occurrence. A decision is terminal — no state
+/// returns to `PENDING` — so the audit trail never loses a step: a skipped or
+/// dismissed échéance stays visible, and a confirmed one keeps its transaction.
+enum RecurringOccurrenceStatus {
+  PENDING
+  CONFIRMED
+  SKIPPED
+  DISMISSED
+}
+
+/// The lifecycle of a goal. `ACHIEVED` and `ABANDONED` are explicit choices, never
+/// derived: progress is a computed figure, the status is what the owner decided.
+enum GoalStatus {
+  ACTIVE
+  ACHIEVED
+  ABANDONED
+}
+
+/// The well-understood situations the alert engine watches. Deterministic rules only:
+/// no statistical heuristics in the first pass.
+enum AlertKind {
+  LOW_BALANCE
+  BUDGET_OVERRUN
+  UNUSUAL_EXPENSE
+  STALE_INTEGRATION
+  OVERDUE_EVENT
+}
+
+/// The lifecycle of one alert. `DISMISSED` is the owner's choice and sticks while the
+/// condition holds; `RESOLVED` means the condition stopped being true — a resolved
+/// alert that triggers again reopens, a dismissed one waits for that resolution first.
+enum AlertStatus {
+  ACTIVE
+  DISMISSED
+  RESOLVED
+}
+
 /// An open issue and an open pull request arrive from the same provider endpoint;
 /// they stay distinct because they call for different actions.
 enum IssueKind {
@@ -89,8 +139,16 @@ model User {
   accounts    Account[]
   categories  Category[]
   transactions Transaction[]
+  budgets     Budget[]
+  salarySetting SalarySetting?
+  workDays    WorkDay[]
+  recurringEntries RecurringEntry[]
+  recurringOccurrences RecurringOccurrence[]
+  goals       Goal[]
   properties  Property[]
   connections IntegrationConnection[]
+  alerts      Alert[]
+  alertRules  AlertRule[]
 }
 
 /// A manually tracked account. No banking credentials are ever stored here.
@@ -106,6 +164,8 @@ model Account {
 
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   transactions Transaction[]
+  recurringEntries RecurringEntry[]
+  goals        Goal[]
 
   @@unique([userId, name])
   @@index([userId])
@@ -121,6 +181,8 @@ model Category {
 
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   transactions Transaction[]
+  budgets      Budget[]
+  recurringEntries RecurringEntry[]
 
   @@unique([userId, name, kind])
   @@index([userId])
@@ -148,10 +210,160 @@ model Transaction {
   account   Account           @relation(fields: [accountId], references: [id], onDelete: Restrict)
   category  Category?         @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   cashflows PropertyCashflow[]
+  recurringOccurrence RecurringOccurrence?
 
   @@unique([accountId, externalRef])
   @@index([userId, operationDate])
   @@index([userId, categoryId])
+}
+
+/// A planned amount for one category, one month and one currency.
+///
+/// The amount is a positive magnitude: the category's kind says whether this is a
+/// spending envelope or an income target. Currencies are never converted, so the same
+/// category may carry one budget per currency — and exactly one, which the unique
+/// constraint enforces.
+model Budget {
+  id         String   @id @default(cuid())
+  userId     String
+  categoryId String
+  year       Int
+  /// 1-based month, as a human writes it.
+  month      Int
+  currency   String   @default("EUR") @db.Char(3)
+  amount     Decimal  @db.Decimal(18, 2)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, categoryId, year, month, currency])
+  @@index([userId, year, month])
+}
+
+/// The owner's wage, reduced to the one unit the simulation needs: an exact hourly
+/// rate. Weekly and monthly amounts are only derived figures shown next to it (see
+/// `salaryEquivalents`), never stored in those units.
+model SalarySetting {
+  id         String   @id @default(cuid())
+  userId     String   @unique
+  /// Exact hourly rate, in `currency`.
+  hourlyRate Decimal  @db.Decimal(18, 2)
+  /// Default length of a plannable day, in hours. Applies to future clicks only.
+  hoursPerDay Decimal @db.Decimal(4, 2)
+  currency   String   @default("EUR") @db.Char(3)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// One clicked day of the salary calendar. The status is the level the owner reached:
+/// `PLANNED` feeds the simulated budget, `WORKED` the real amount. One row per owner
+/// and day, which the unique constraint enforces; the third click removes the row.
+model WorkDay {
+  id     String        @id @default(cuid())
+  userId String
+  date   DateTime      @db.Date
+  status WorkDayStatus @default(PLANNED)
+  /// Hours for this day, adjustable by half-hours.
+  hours  Decimal       @db.Decimal(4, 2)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+}
+
+/// A recurring definition of an expected income or expense (rent, subscription, salary).
+///
+/// The definition never writes to the ledger by itself: it only describes a series, and
+/// each occurrence must be confirmed explicitly — the confirmation goes through the same
+/// creation path as a manually typed transaction. `amount` is a positive magnitude;
+/// `type` carries the direction, the way a budget's category kind carries it.
+model RecurringEntry {
+  id         String              @id @default(cuid())
+  userId     String
+  accountId  String
+  categoryId String?
+  type       TransactionType
+  label      String
+  /// Planned magnitude, always positive; the sign comes from `type` at confirmation.
+  amount     Decimal             @db.Decimal(18, 2)
+  frequency  RecurrenceFrequency @default(MONTHLY)
+  /// First day of the series; its day-of-month is the recurring day (31 → end of
+  /// shorter months, see `occurrenceDatesForMonth`).
+  startDate  DateTime            @db.Date
+  /// Last day of the series, inclusive. Null means the series has no end.
+  endDate    DateTime?           @db.Date
+  createdAt  DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime            @updatedAt @db.Timestamptz(3)
+
+  user        User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account     Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  category    Category?             @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  occurrences RecurringOccurrence[]
+
+  @@index([userId])
+}
+
+/// One occurrence of a recurring definition, materialised for a month.
+///
+/// Created in bulk and idempotently when a month is opened; the unique
+/// (recurringId, date) keeps a second opening from duplicating it. `transactionId` is
+/// set by the confirmation and unique, so a replay cannot book the same occurrence
+/// twice. Deleting that transaction deletes its occurrence row instead of leaving a
+/// phantom "confirmed": opening the month again offers the échéance anew, which is
+/// the honest reading of a booking that no longer exists.
+model RecurringOccurrence {
+  id            String                    @id @default(cuid())
+  userId        String
+  recurringId   String
+  /// Calendar day of the occurrence, a `DATE` like every operation date.
+  date          DateTime                  @db.Date
+  status        RecurringOccurrenceStatus @default(PENDING)
+  transactionId String?                   @unique
+  /// When the confirm, skip or dismiss decision was taken. Null while pending.
+  decidedAt     DateTime?                 @db.Timestamptz(3)
+  createdAt     DateTime                  @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime                  @updatedAt @db.Timestamptz(3)
+
+  user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  recurring   RecurringEntry @relation(fields: [recurringId], references: [id], onDelete: Cascade)
+  transaction Transaction?   @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@unique([recurringId, date])
+  @@index([userId, status, date])
+}
+
+/// A savings or repayment goal: a target amount in one currency, to be set aside (or
+/// repaid) by a target date.
+///
+/// The current amount comes from exactly one source — a manual amount, or the recorded
+/// balance of a linked account (`currentAmount` and `accountId` are mutually exclusive,
+/// enforced by the input contract). With neither, progress is *unknown* and is read as
+/// unknown, never as zero. A linked account must carry the goal's currency: no
+/// conversion ever happens.
+model Goal {
+  id           String     @id @default(cuid())
+  userId       String
+  name         String
+  targetAmount Decimal    @db.Decimal(18, 2)
+  currency     String     @default("EUR") @db.Char(3)
+  targetDate   DateTime   @db.Date
+  status       GoalStatus @default(ACTIVE)
+  /// Manual current amount, never negative; mutually exclusive with `accountId`.
+  currentAmount Decimal?  @db.Decimal(18, 2)
+  accountId    String?
+  createdAt    DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime   @updatedAt @db.Timestamptz(3)
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
 }
 
 model Property {
@@ -364,4 +576,63 @@ model SyncRun {
   connection IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
 
   @@index([connectionId, startedAt])
+}
+
+/// One evaluated warning about the owner's data (see `src/modules/alerts`).
+///
+/// The row never stores free text: `inputs` holds the message inputs as plain strings
+/// (amounts, names, dates, computed gaps) and the French reason is recomputed from them
+/// at render time, so a forged request can never write the sentence a page displays.
+/// The `fingerprint` (rule + entity + period) is unique per owner: re-evaluating the
+/// same condition refreshes the row instead of duplicating it, and the unicity also
+/// absorbs a concurrent double evaluation.
+///
+/// Alerts are observations only — no rule ever writes to the ledger.
+model Alert {
+  id          String      @id @default(cuid())
+  userId      String
+  kind        AlertKind
+  /// Stable identity of the watched condition: rule + entity + period.
+  fingerprint String
+  status      AlertStatus @default(ACTIVE)
+  /// Message inputs, strings only, recomputed into the displayed reason.
+  inputs      Json
+  /// When the current open episode started (reset on every re-trigger).
+  triggeredAt DateTime    @default(now()) @db.Timestamptz(3)
+  /// Last evaluation that still saw the condition.
+  lastSeenAt  DateTime    @db.Timestamptz(3)
+  dismissedAt DateTime?   @db.Timestamptz(3)
+  resolvedAt  DateTime?   @db.Timestamptz(3)
+  createdAt   DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime    @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, fingerprint])
+  @@index([userId, status])
+}
+
+/// One rule's configuration, per owner and kind.
+///
+/// A missing row means "defaults" (`ALERT_RULE_DEFAULTS` in `src/modules/alerts`),
+/// so the engine works before any settings are saved. Only the thresholds that make
+/// sense for a kind are set: an amount for `LOW_BALANCE` and `UNUSUAL_EXPENSE` (with
+/// its currency — amounts in another currency are never compared, they are skipped),
+/// a percentage for `BUDGET_OVERRUN`, a number of days for `STALE_INTEGRATION` and
+/// `OVERDUE_EVENT`.
+model AlertRule {
+  id                String    @id @default(cuid())
+  userId            String
+  kind              AlertKind
+  enabled           Boolean   @default(true)
+  thresholdAmount   Decimal?  @db.Decimal(18, 2)
+  thresholdCurrency String?   @db.Char(3)
+  thresholdPercent  Decimal?  @db.Decimal(6, 2)
+  thresholdDays     Int?
+  createdAt         DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime  @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, kind])
 }

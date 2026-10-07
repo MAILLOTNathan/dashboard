@@ -19,25 +19,75 @@ Working today:
 - Personal budget: accounts, categories, transactions entered from the budget
   page, monthly totals per currency, filters, CSV export, deletion with confirmation,
   correction of an existing operation (the row reopens in the entry form, filters kept)
-  and two charts (a 12-month trend and the month's spending per category). Submitted
-  values stay in the transaction and cashflow forms, so a second line is a small edit;
-  the one-shot forms (account, category, property, password) clear themselves.
+  and two charts (a 12-month trend and the month's spending per category). Monthly
+  budgets per category and currency complete the picture: a positive planned amount,
+  duplicates for the same month refused, currencies kept separate with no conversion.
+  A **Suivi** tab compares that plan with reality: planned, actual and remaining per
+  category and currency, with per-currency totals for the spending envelopes and the
+  income goals under the table, over operation dates only, with refunds reducing their
+  category and never a conversion between currencies.
+  A **Prévisions** tab materialises the month's expected occurrences of recurring
+  series — rent, subscriptions, salaries. Nothing counts in a total until a
+  confirmation: confirming creates the transaction through the same path as a manual
+  entry, while passing or discarding records an auditable decision and writes nothing;
+  a series is stopped with its end date rather than deleted once an échéance is decided.
+  The month's salary prévision from the simulator appears there too, as the first row of
+  the échéances with its registration in place; once recorded it joins the month's
+  decisions. Above the list, per-currency totals show the month's prévisionnel —
+  expected income, expenses and net, confirmed movements included, passed and dismissed
+  ones excluded.
+  An **Objectifs** tab tracks savings or repayment targets: a positive target amount in
+  one currency and a target date, with the current amount taken from a manual entry or
+  from the recorded balance of a linked account (the two are mutually exclusive).
+  Progress is shown as an amount and a percentage, with the remaining and the monthly
+  contribution — remaining divided by the whole months left, rounded half-up on cents —
+  and a deadline that has passed or a reached target states why no contribution is
+  defined. Missing or empty data reads "unknown", never zero, and no currency is ever
+  converted (a linked account must match the goal's currency).
+  Above the goals, a **seuil d'épargne conseillé** states the cushion a savings account
+  should hold: six months of expected expenses (current month included) summed from the
+  recurring series of the Prévisions tab, per currency and never stored. It reads the
+  recorded balance of the accounts typed as savings — an unrecorded account stays
+  unknown, never zero.
+  A **Salaire** tab simulates earnings from an hourly rate: one click on the calendar
+  plans a day, a second marks it really worked, a third clears it. A booking button
+  records the month's simulated amount (planned and worked days, each counted once) as
+  one income entry, in a default « Salaire » category — nothing is written before that
+  click.
+  Submitted values stay in the transaction and cashflow forms, so a second line is a
+  small edit; the one-shot forms (account, category, property, password) clear themselves.
+- Alerts: an **Alertes** page watches five deterministic rules — low account balance,
+  budget overrun, expense above a threshold, stale synchronisation, overdue property
+  cashflow — each with its own configurable threshold and an explanation spelled out
+  next to the setting. The engine runs on demand (opening the page or the dashboard),
+  and the dashboard shows a banner as soon as an alert is active. Every alert states the
+  data that triggered it; duplicates are suppressed by a fingerprint (rule + entity +
+  period), dismissing one silences it until the situation resolves, and nothing ever
+  writes to the ledger automatically. Missing data is never treated as an anomaly: an
+  account with no operation, a never-synced connection or a partially-read month keeps
+  the rule quiet.
+- CSV exports: transactions (month + account/category/type/text filters), budgets
+  (month), goals and alerts (status filter), plus the properties file — all behind the
+  session, `no-store`, formula-neutralised, and bounded at 10 000 rows rather than
+  streamed (the decision is documented in the architecture notes). An unknown value
+  exports as an empty cell with its reason, never as a zero.
 - Real estate: properties and cashflow entries entered from the real-estate
-  page, occupancy status, totals, due dates.
-- GitHub / GitLab connections: read-only adapters, encrypted tokens, manual
+  page, occupancy status, totals, due dates.- GitHub / GitLab connections: read-only adapters, encrypted tokens, manual
   synchronisation, project snapshots, and a small GitHub: open issues and pull
   requests counted per repository, an explorer with combinable filters (repository,
   type, assignee, label, milestone, state, text), and milestones with their due dates
   and progress. GitLab stays on project metadata, on purpose.
-- Dashboard with indicators derived from real data, distinguishing "no data",
+- Dashboard with indicators derived from real data — including the month's budget
+  tracking, planned versus actual per currency and kind — distinguishing "no data",
   "not connected" and "synchronisation failed".
 
 Not implemented yet:
 
-- The budget view is a table, not an editable grid: correcting a line means reopening it
-  in the entry form, not typing in the cell. Only transactions can be edited — accounts,
-  categories and properties can still only be created, never modified.
-- Accounts, categories and properties cannot be deleted yet; only transactions can.
+- The budget view is a table, not an editable grid: correcting an operation means reopening it
+  in the entry form, not typing in the cell. Transactions, monthly budgets and goals can be edited
+  and deleted; accounts, categories and properties can still only be created.
+- Accounts, categories and properties cannot be deleted yet; only transactions,
+  budgets and goals can.
 - A scheduler entry point for automatic synchronisation (the function exists and
   is idempotent; the trigger is not shipped).
 - Bank connection, payments, accounting, tax advice — permanently out of scope.
@@ -316,8 +366,9 @@ running. No test connects to a database or performs a real network call: busines
 rules are called directly, provider adapters receive an injected fake `fetch`, and
 the action-level tests mock their modules. They cover what is expensive to get
 wrong: money and date handling, monthly totals (transfers counted by sign, refunds,
-currencies), CSV escaping and formula neutralisation, the password policy and the
-session guard, provider failure cases, issue filters and milestones.
+currencies), CSV escaping and formula neutralisation, the export routes (filters,
+month boundaries, empty files, bounded reads, owner scoping), the password policy
+and the session guard, provider failure cases, issue filters and milestones.
 
 `.github/workflows/ci.yml` runs on every push to `main` and every pull request:
 install, generate the Prisma client, lint, type check, unit tests, apply the

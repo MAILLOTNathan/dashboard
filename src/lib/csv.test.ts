@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createCsvResponse, escapeCsvValue, toCsv } from "./csv";
+import { createCsvResponse, escapeCsvValue, EXPORT_ROW_LIMIT, toCsv } from "./csv";
 
 type Row = { name: string; amount: string };
 
@@ -67,6 +67,21 @@ describe("toCsv", () => {
       "Loyer,900.00",
       '"Charges, copropriété",-120.00',
     ]);
+  });
+
+  it("handles a full-size export in one pass, inside the documented bound", () => {
+    // EXPORT_ROW_LIMIT is what every export route passes to its read: the writer must
+    // stay predictable at that size, and the line count must be exactly rows + header.
+    const rows = Array.from({ length: EXPORT_ROW_LIMIT }, (_, index) => ({
+      name: `Ligne ${index}`,
+      amount: "-45.90",
+    }));
+
+    const lines = toCsv<Row>(rows, COLUMNS).split("\r\n");
+
+    expect(lines).toHaveLength(EXPORT_ROW_LIMIT + 1);
+    expect(lines[1]).toBe("Ligne 0,-45.90");
+    expect(lines.at(-1)).toBe(`Ligne ${EXPORT_ROW_LIMIT - 1},-45.90`);
   });
 });
 

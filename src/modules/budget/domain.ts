@@ -1,6 +1,6 @@
 import Decimal from "decimal.js";
 import { z } from "zod";
-import { toDateOnlyString } from "@/lib/dates";
+import { parseMonthKey, toDateOnlyString } from "@/lib/dates";
 import { toDecimalString, type Currency } from "@/lib/money";
 import {
   amount,
@@ -11,7 +11,7 @@ import {
 } from "@/lib/validation";
 
 /**
- * Budget module: accounts, categories and transactions.
+ * Budget module: accounts, categories, transactions and monthly budgets.
  *
  * Signs are meaningful: an outflow is stored as a negative amount. The
  * transaction type stays explicit so that a transfer is never mistaken for an
@@ -50,6 +50,8 @@ export type TransactionRecord = {
   categoryName: string | null;
   notes: string | null;
   externalRef: string | null;
+  /** Instant the row was written, distinct from `operationDate` (a calendar day). */
+  createdAt: Date;
 };
 
 export type AccountSummary = {
@@ -254,4 +256,150 @@ export function assertAmountMatchesType(
   if (type === "EXPENSE" && amount.isZero()) {
     throw new Error("Une dépense de zéro n'apporte aucune information.");
   }
+}
+
+/**
+ * Monthly budgets: a planned amount per category, month and currency.
+ *
+ * A budget is a positive magnitude: "300 € for groceries" reads the same whoever reads
+ * it, and the category's kind says whether it is a spending envelope or an income
+ * target. The sign conventions of transactions do not apply to it; reconciling the plan
+ * with signed actuals is the reporting layer's job (BP-02).
+ *
+ * Currencies are never converted, so one category can carry one budget per currency for
+ * the same month — and exactly one, which the unique constraint enforces.
+ */
+
+export type BudgetRecord = {
+  id: string;
+  categoryId: string;
+  categoryName: string;
+  categoryKind: CategoryKind;
+  year: number;
+  /** 1-based month, as a human writes it. */
+  month: number;
+  currency: Currency;
+  /** Planned amount, always positive. */
+  amount: Decimal;
+};
+
+/** Identity of a budget row: what the uniqueness rule compares. */
+export type BudgetIdentity = {
+  categoryId: string;
+  year: number;
+  month: number;
+  currency: Currency;
+};
+
+/** `YYYY-MM` key, the month form used across the project. */
+export function budgetMonthKey(year: number, month: number): string {
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}`;
+}
+
+/** Full identity of a budget, serialised so two tuples can be compared without drift. */
+export function budgetIdentityKey(budget: BudgetIdentity): string {
+  return `${budget.categoryId}|${budgetMonthKey(budget.year, budget.month)}|${budget.currency}`;
+}
+
+/**
+ * The first budget of `existing` that already covers this category, month and currency,
+ * or `null` when the period is free.
+ *
+ * This is the rule; the unique index on the same tuple is what keeps it true under
+ * concurrent writes. The Server Actions check it before writing so a duplicate is
+ * refused as a field error, and still translate a unique-constraint violation into the
+ * same message when two requests cross.
+ */
+export function findDuplicateBudget<T extends BudgetIdentity>(
+  candidate: BudgetIdentity,
+  existing: readonly T[],
+): T | null {
+  const key = budgetIdentityKey(candidate);
+
+  return existing.find((row) => budgetIdentityKey(row) === key) ?? null;
+}
+
+/** Message shared by the pre-check and the constraint-violation path. */
+export const DUPLICATE_BUDGET_MESSAGE =
+  "Un budget existe déjà pour cette catégorie sur ce mois, dans cette devise.";
+
+/**
+ * A `YYYY-MM` month, validated against the project's calendar bounds (year 1970-9999,
+ * month 1-12) and converted to the two integers the model stores.
+ */
+export const budgetMonthSchema = z
+  .string()
+  .trim()
+  .transform((value, ctx) => {
+    try {
+      // Destructured on purpose: `parseMonthKey` also carries the month's bounds, and
+      // the schema contract is exactly the two integers the model stores.
+      const { year, month } = parseMonthKey(value);
+      return { year, month };
+    } catch {
+      ctx.addIssue({ code: "custom", message: "Mois attendu au format AAAA-MM." });
+      return z.NEVER;
+    }
+  });
+
+/**
+ * A planned amount, strictly positive.
+ *
+ * The absence of a budget is the absence of a row: a zero plan would say nothing, and a
+ * negative one would contradict the magnitude a budget is.
+ */
+const budgetAmount = amount.refine(
+  (value) => value.greaterThan(0),
+  "Le montant prévu doit être supérieur à zéro.",
+);
+
+/**
+ * Input contract for a monthly budget, shared by the form and the Server Actions.
+ *
+ * The owner never travels in the payload: it comes from the session. The category is an
+ * identifier the action resolves against the owner's own categories, so a foreign one is
+ * "not found" rather than a leak.
+ */
+export const budgetInputSchema = z.object({
+  categoryId: z.string().trim().min(1, "Une catégorie est requise."),
+  month: budgetMonthSchema,
+  currency: currencyCode,
+  amount: budgetAmount,
+});
+
+export type BudgetInput = z.input<typeof budgetInputSchema>;
+export type ValidatedBudgetInput = z.output<typeof budgetInputSchema>;
+
+/** Creation fields plus the identifier of the row being replaced. */
+export const budgetUpdateSchema = budgetInputSchema.extend({
+  id: z.string().trim().min(1, "Identifiant manquant."),
+});
+
+export type BudgetUpdateValues = z.input<typeof budgetUpdateSchema>;
+export type ValidatedBudgetUpdate = z.output<typeof budgetUpdateSchema>;
+
+/**
+ * A budget prepared for the edit form.
+ *
+ * Strings only, and deliberately so: a `Decimal` cannot cross the server/client boundary,
+ * and a month input only understands `YYYY-MM`. The conversion happens on the server,
+ * where the exact value lives.
+ */
+export type BudgetFormInitialValues = {
+  id: string;
+  categoryId: string;
+  /** `YYYY-MM`. */
+  month: string;
+  currency: Currency;
+  amount: string;
+};
+
+export function toBudgetFormInitialValues(record: BudgetRecord): BudgetFormInitialValues {
+  return {
+    id: record.id,
+    categoryId: record.categoryId,
+    month: budgetMonthKey(record.year, record.month),
+    currency: record.currency,
+    amount: toDecimalString(record.amount),
+  };
 }

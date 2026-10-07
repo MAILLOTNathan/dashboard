@@ -26,7 +26,7 @@ read-only; personal and company data are not mixed.
 
 ```text
 src/
-  app/(app)/         authenticated pages: account, budget, dashboard, integrations, real-estate
+  app/(app)/         authenticated pages: account, alerts, budget, dashboard, integrations, real-estate
   app/api/           Route Handlers: auth callbacks + CSV export (401 JSON, never a redirect)
   app/login/         sign-in page
   components/        shared UI (forms, server-rendered SVG charts, navigation)
@@ -42,11 +42,27 @@ docs/                architecture/overview.md, decisions/
 
 ## Data model (`prisma/schema.prisma`)
 
-`User` (sole owner) owns `Account`, `Category`, `Transaction`, `Property`,
-`IntegrationConnection`. Key rules:
+`User` (sole owner) owns `Account`, `Category`, `Transaction`, `Budget`,
+`RecurringEntry`, `Goal`, `SalarySetting`, `WorkDay`, `Property`,
+`IntegrationConnection`, `Alert`, `AlertRule`. Key rules:
 
 - `Transaction.amount` is `Decimal(18, 2)`, signed (negative = outflow); never floats.
 - `Transaction.operationDate` is `DATE`; instants are `timestamptz(3)` UTC.
+- `Budget.amount` is `Decimal(18, 2)` and always positive (a planned magnitude);
+  one row per `(userId, categoryId, year, month, currency)` unique tuple.
+- `SalarySetting` (one per owner: hourly rate, default hours per day, currency) and
+  `WorkDay` (one per owner and date: `PLANNED`/`WORKED` + hours) power the salary
+  simulator; its booking button writes one INCOME transaction per month (`externalRef`
+  `salary:YYYY-MM`, category « Salaire », seeded as a default category).
+- `Goal` is a target amount in one currency with a target date and a status; its current
+  amount comes from **either** a manual `currentAmount` **or** a linked `accountId`
+  (mutually exclusive, enforced by the action): the linked form reads the signed sum of
+  the account's transactions, and missing data reads "unknown", never zero. Linking is
+  owner-scoped and same-currency — no conversion is ever applied.
+- `Alert` stores one episode per watched condition: `fingerprint` (unique with the
+  owner), `status` (ACTIVE / DISMISSED / RESOLVED), and `inputs` as `Json` — message
+  inputs only, never the displayed sentence. `AlertRule` holds one configuration per
+  kind (enabled, one of thresholdAmount/thresholdCurrency/thresholdPercent/thresholdDays).
 - `PropertyCashflow` carries **either** a typed `amount` **or** a `transactionId`
   (mutually exclusive, link unique): no double counting in property totals.
 - `IntegrationConnection.credentialsCiphertext` holds the AES-256-GCM token; it is
@@ -123,15 +139,55 @@ http://dashboard.localhost:8888 (the proxy belongs to the `full` profile).
 - Budget: accounts, categories, transactions (create; edit reopens the row in the
   form via `?edit=<id>`; delete with a confirmation step); filters; monthly totals
   per currency; two server-rendered SVG charts (12-month trend, category breakdown)
-  that always print exact figures; CSV export at `/api/export` (`no-store`,
-  formula neutralisation).
+  that always print exact figures; CSV export at `/api/export/transactions`
+  (`no-store`, formula neutralisation, bounded by `EXPORT_ROW_LIMIT`); monthly
+  budgets per category and currency (create, edit
+  via `?editBudget=<id>`, delete with a confirmation step — a positive planned
+  amount, duplicates rejected, currencies never converted). The page is split into
+  seven tabs selected by `?tab=` — Opérations (entry, filters, month list), Analyse
+  (indicators, charts), Budgets, Suivi (planned vs actual per category and currency,
+  with per-currency totals for expenses and income under the table: operation dates
+  only, refunds reduce their category, transfers and uncategorised lines excluded, no
+  conversion), Prévisions (recurring series of expected income or expenses: one
+  occurrence per month, materialised idempotently; confirming creates the transaction
+  through the manual path, passing or discarding writes an auditable decision and no
+  transaction, nothing counts in a total before a confirmation — plus the month's
+  salary prévision, computed from the simulator, shown as the first row of the
+  échéances table (registration form in the row; once recorded, listed among the
+  month's decisions) and recorded through the same booking as the Salaire tab, plus
+  per-currency prévisionnel totals above the list — expected income, expenses and net,
+  confirmed included, passed/dismissed excluded), Objectifs (savings or repayment
+  targets: current amount from a manual entry or a linked account's recorded balance,
+  progress as amount + percentage, remaining, and a monthly contribution rounded
+  half-up on cents — undefined after the deadline or once reached, and an unknown
+  source always reads as "unknown", never as zero; above the table, a computed
+  **savings threshold**: six months of expected expenses from the recurring series
+  (current month + 5, per currency, never stored), compared to the recorded balance of
+  the accounts typed SAVINGS — an unrecorded account stays unknown) and Salaire (hourly-rate simulator:
+  one click plans a day, a second marks it worked, a third clears it; a booking button
+  records the month's simulated amount — planned and worked days, each once — as one
+  INCOME in the default « Salaire » category) — each tab reading only its own data;
+  `?edit=`/`?editBudget=`/`?editGoal=` links land on their tab.
 - Real estate: properties (explicit occupancy — not all rented), cashflow entries
   (amount XOR transaction link), totals, due dates, notes.
 - Integrations: read-only GitHub (projects, open issues + PRs, explorer with
   combinable filters validated against present data, milestones); encrypted tokens;
   manual idempotent sync (`src/jobs/sync.ts`), fetch bounded on purpose. GitLab is
   limited to project metadata by policy.
-- Dashboard: indicators from stored snapshots; distinguishes "no data" /
+- Alerts (`/alerts`, « Alertes » in the nav): deterministic rules only (low balance,
+  budget overrun, unusual expense, stale integration, overdue cashflow), evaluated
+  server-side on demand by one bounded pass that the dashboard and the alert page run
+  while rendering. Alerts never write to the ledger; each row stores message **inputs**
+  (strings), and the French reason is recomputed by `describeAlert`. Fingerprint
+  (rule + entity + period, unique per owner) suppresses duplicates; dismissing silences
+  an episode until it resolves, after which a re-trigger reopens it. Rules are
+  configurable per kind (`AlertRule`, empty threshold = default; amount thresholds
+  always name a currency — no conversion) and disabling one closes its open episodes.
+  Missing data is never a zero: an account without transactions, a never-synced
+  connection, or a truncated month read keeps the rule quiet.
+- Dashboard: month totals per currency, budget tracking (planned vs actual per
+  currency and kind, the remaining drives the card tone, no card when no budget
+  exists), indicators from stored snapshots; distinguishes "no data" /
   "not connected" / "synchronisation failed" — never shows a misleading 0.
 - Backups (`infra/backups/`) and CI (lint, typecheck, tests, `db:deploy` on a fresh
   PostgreSQL service, build).
