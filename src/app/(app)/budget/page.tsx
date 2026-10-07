@@ -13,6 +13,7 @@ import { GoalsSection } from "./goals-section";
 import { OperationsSection } from "./operations-section";
 import { ReportSection } from "./report-section";
 import { SalarySection } from "./salary-section";
+import { SavingsThresholdCard } from "./savings-threshold-card";
 
 export const dynamic = "force-dynamic";
 
@@ -114,7 +115,12 @@ export default async function BudgetPage({
         <ForecastSection userId={user.id} monthKey={monthKey} />
       ) : null}
 
-      {tab === "goals" ? <GoalsSection userId={user.id} editGoalId={editGoalId} /> : null}
+      {tab === "goals" ? (
+        <>
+          <SavingsThresholdCard userId={user.id} />
+          <GoalsSection userId={user.id} editGoalId={editGoalId} />
+        </>
+      ) : null}
 
       {tab === "salary" ? <SalarySection userId={user.id} monthKey={monthKey} /> : null}
     </>

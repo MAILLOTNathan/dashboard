@@ -14,7 +14,7 @@ the pages that consume it.
 | Module | Responsibility | Key files |
 | --- | --- | --- |
 | `identity` | The single owner account. No public sign-up: the account is created by the seed script. | `repository.ts` |
-| `budget` | Accounts, categories, transactions, monthly budgets, budget follow-up, salary simulation, recurring forecasts, financial goals and monthly aggregation. | `domain.ts`, `totals.ts`, `salary.ts`, `report.ts`, `recurrence.ts`, `goals.ts`, `transactions.ts`, `repository.ts` |
+| `budget` | Accounts, categories, transactions, monthly budgets, budget follow-up, salary simulation, recurring forecasts, financial goals, the savings threshold and monthly aggregation. | `domain.ts`, `totals.ts`, `salary.ts`, `report.ts`, `recurrence.ts`, `goals.ts`, `savings.ts`, `transactions.ts`, `repository.ts` |
 | `real-estate` | Properties, cashflow entries, due dates, and the double-counting rule. | `domain.ts`, `repository.ts` |
 | `integrations` | Read-only GitHub and GitLab connections, provider adapters, snapshots. | `domain.ts`, `adapter.ts`, `github.ts`, `gitlab.ts`, `repository.ts` |
 | `alerts` | Deterministic warning engine: rule configuration, one bounded evaluation pass, episode lifecycle (fingerprint suppression, dismissal). Rules sit next to their data: `budget/alerts.ts`, `integrations/alerts.ts`, `real-estate/alerts.ts`. | `domain.ts`, `lifecycle.ts`, `refresh.ts`, `repository.ts` |
@@ -230,8 +230,27 @@ asked for: a cascade here would silently change what a property is worth.
     zero months left it is the whole remaining amount (the deadline is now), and it is
     not defined once the target date has passed or the goal is reached — the table states
     the reason instead of a figure. The division is guarded, never a division by zero.
+- Savings threshold (budget page, « Objectifs » tab, above the goals) — the cushion a
+  savings account should hold, computed, never stored:
+  - *window* — **six calendar months starting with the current one** (`savingsWindow`):
+    the money must cover what is still ahead, including the month being lived through.
+    Each month counts whole, whatever the day of the month.
+  - *expected expenses* — the recurring EXPENSE definitions of the Prévisions tab,
+    summed month by month through `occurrenceDatesForMonth` (the series' day of month,
+    clamped to shorter months, nothing before the start or after the end). Income
+    series are ignored; nothing is averaged or extrapolated.
+  - *currency* — one threshold per currency, resolved through each series' account (the
+    same rule as the Prévisions tab). Currencies are never converted.
+  - *savings* — the accounts typed `SAVINGS` of that currency; their **recorded**
+    balances are added up. No account is not a figure, and an account with no recorded
+    transaction reads **unknown**, never zero — progress and shortfall stay blank until
+    something is recorded.
+  - *progress* — savings ÷ threshold × 100, half-up to one decimal; *shortfall* —
+    threshold − savings, negative when the cushion exceeds the threshold. A real zero
+    balance stays a known zero: 0 % and the whole threshold to constitute.
 - Property totals — each cashflow entry counts once. When an entry is linked to
-  a transaction, the transaction is the only source of the amount.- GitHub issues — only **open** issues and pull requests are kept, and only the
+  a transaction, the transaction is the only source of the amount.
+- GitHub issues — only **open** issues and pull requests are kept, and only the
   fields needed to act: title, link, author, **assignees**, **milestone**, comment
   count, labels, dates. No description, no comment body, no source code: reading them
   stays at the provider.

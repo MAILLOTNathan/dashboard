@@ -160,7 +160,10 @@ http://dashboard.localhost:8888 (the proxy belongs to the `full` profile).
   targets: current amount from a manual entry or a linked account's recorded balance,
   progress as amount + percentage, remaining, and a monthly contribution rounded
   half-up on cents — undefined after the deadline or once reached, and an unknown
-  source always reads as "unknown", never as zero) and Salaire (hourly-rate simulator:
+  source always reads as "unknown", never as zero; above the table, a computed
+  **savings threshold**: six months of expected expenses from the recurring series
+  (current month + 5, per currency, never stored), compared to the recorded balance of
+  the accounts typed SAVINGS — an unrecorded account stays unknown) and Salaire (hourly-rate simulator:
   one click plans a day, a second marks it worked, a third clears it; a booking button
   records the month's simulated amount — planned and worked days, each once — as one
   INCOME in the default « Salaire » category) — each tab reading only its own data;

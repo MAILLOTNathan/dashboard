@@ -44,6 +44,11 @@ Working today:
   and a deadline that has passed or a reached target states why no contribution is
   defined. Missing or empty data reads "unknown", never zero, and no currency is ever
   converted (a linked account must match the goal's currency).
+  Above the goals, a **seuil d'épargne conseillé** states the cushion a savings account
+  should hold: six months of expected expenses (current month included) summed from the
+  recurring series of the Prévisions tab, per currency and never stored. It reads the
+  recorded balance of the accounts typed as savings — an unrecorded account stays
+  unknown, never zero.
   A **Salaire** tab simulates earnings from an hourly rate: one click on the calendar
   plans a day, a second marks it really worked, a third clears it. A booking button
   records the month's simulated amount (planned and worked days, each counted once) as
