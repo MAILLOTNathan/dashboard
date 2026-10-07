@@ -11,6 +11,7 @@ import { requireUser } from "@/lib/auth/guard";
 import { formatInstant } from "@/lib/dates";
 import { publicEnv } from "@/lib/env";
 import { formatMoney } from "@/lib/money";
+import { refreshAlerts } from "@/modules/alerts/refresh";
 import { describeBudgetVariance } from "@/modules/budget/report";
 import { getDashboardOverview } from "@/modules/dashboard/queries";
 
@@ -19,9 +20,15 @@ export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
 	const user = await requireUser();
+
+	// One bounded evaluation pass before reading anything: the warnings below describe the
+	// data of this visit, and the pass never writes to the ledger. The alert page runs the
+	// same pass, so both screens tell the same story.
+	await refreshAlerts(user.id);
+
 	const overview = await getDashboardOverview(user.id);
 
-	const { budget, budgetTracking, realEstate, integrations, monthKey, monthLabel } =
+	const { alerts, budget, budgetTracking, realEstate, integrations, monthKey, monthLabel } =
 		overview;
 	const hasAnyTransaction = budget.transactionCount > 0;
 
@@ -47,6 +54,41 @@ export default async function DashboardPage() {
 					</>
 				}
 			/>
+
+			{alerts.active.length > 0 ? (
+				<section aria-labelledby="alertes-actives" className="flex flex-col gap-2">
+					<div className="flex flex-wrap items-baseline justify-between gap-2">
+						<h2
+							id="alertes-actives"
+							className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400"
+						>
+							Alertes — {alerts.active.length} active{alerts.active.length > 1 ? "s" : ""}
+						</h2>
+						<Link
+							href="/alerts"
+							className="text-sm underline-offset-2 hover:underline"
+						>
+							Règles et historique
+						</Link>
+					</div>
+
+					{alerts.active.slice(0, 3).map((alert) => (
+						<Notice
+							key={alert.id}
+							tone={alert.tone === "negative" ? "error" : "warning"}
+						>
+							<strong>{alert.title} :</strong> {alert.reason}
+						</Notice>
+					))}
+
+					{alerts.active.length > 3 ? (
+						<p className="text-sm text-zinc-500 dark:text-zinc-400">
+							+ {alerts.active.length - 3} autre{alerts.active.length - 3 > 1 ? "s" : ""} — voir
+							la page Alertes.
+						</p>
+					) : null}
+				</section>
+			) : null}
 
 			<section aria-labelledby="budget-month" className="flex flex-col gap-3">
 				<h2

@@ -17,6 +17,7 @@ the pages that consume it.
 | `budget` | Accounts, categories, transactions, monthly budgets, budget follow-up, salary simulation, recurring forecasts, financial goals and monthly aggregation. | `domain.ts`, `totals.ts`, `salary.ts`, `report.ts`, `recurrence.ts`, `goals.ts`, `transactions.ts`, `repository.ts` |
 | `real-estate` | Properties, cashflow entries, due dates, and the double-counting rule. | `domain.ts`, `repository.ts` |
 | `integrations` | Read-only GitHub and GitLab connections, provider adapters, snapshots. | `domain.ts`, `adapter.ts`, `github.ts`, `gitlab.ts`, `repository.ts` |
+| `alerts` | Deterministic warning engine: rule configuration, one bounded evaluation pass, episode lifecycle (fingerprint suppression, dismissal). Rules sit next to their data: `budget/alerts.ts`, `integrations/alerts.ts`, `real-estate/alerts.ts`. | `domain.ts`, `lifecycle.ts`, `refresh.ts`, `repository.ts` |
 | `dashboard` | Read-only aggregation for the home page. | `queries.ts` |
 
 Cross-cutting code sits in `src/lib` (`db`, `env`, `money`, `dates`, `csv`,
@@ -230,8 +231,7 @@ asked for: a cascade here would silently change what a property is worth.
     not defined once the target date has passed or the goal is reached — the table states
     the reason instead of a figure. The division is guarded, never a division by zero.
 - Property totals — each cashflow entry counts once. When an entry is linked to
-  a transaction, the transaction is the only source of the amount.
-- GitHub issues — only **open** issues and pull requests are kept, and only the
+  a transaction, the transaction is the only source of the amount.- GitHub issues — only **open** issues and pull requests are kept, and only the
   fields needed to act: title, link, author, **assignees**, **milestone**, comment
   count, labels, dates. No description, no comment body, no source code: reading them
   stays at the provider.
@@ -287,6 +287,65 @@ asked for: a cascade here would silently change what a property is worth.
 
 An indicator is only displayed once its definition is written down, which is
 what this section is for.
+
+## Alert engine (BP-05)
+
+Alerts are **observations** about the owner's own data, produced by deterministic
+rules: a threshold, a comparison, an explanation. No rule writes to the ledger, and
+no machine learning or statistical heuristic runs in this first pass. The rules live
+next to what they read — `budget/alerts.ts` (low balance, budget overrun, unusual
+expense), `integrations/alerts.ts` (stale synchronisation), `real-estate/alerts.ts`
+(overdue event) — and every one of them is a pure function of its inputs and a clock,
+so a fixed date is enough to test it.
+
+The engine runs **server-side on demand**: the dashboard and the alert page each call
+one bounded evaluation pass while rendering (accounts with grouped balances, the
+month's budgets and transactions, the connections, the due cashflows, the stored
+episodes). Nothing runs in the background, and a read that could be partial — the
+month series hitting its row bound — makes the rules that depend on it stay quiet
+rather than accuse on half-read data.
+
+**What triggers, exactly** (boundaries included):
+
+- *Low balance* — the recorded balance of an account is **strictly below** the
+  threshold (exactly at the threshold is not below it). An account with no recorded
+  transaction is not at zero: its balance is unknown and the rule leaves it alone. A
+  zero threshold applies in every currency (zero reads the same everywhere) and flags
+  overdrawn accounts; a positive threshold only compares accounts in its own currency,
+  because nothing is ever converted.
+- *Budget overrun* — an **expense** row of the Suivi report is exceeded (`actual >
+  planned`) and the overrun reaches the configured margin: the margin is compared on
+  the exact percentage of the planned amount (default 0 → any overrun). Income targets
+  are never "overrun". Refunds, transfers and uncategorised lines follow the Suivi
+  rules, and rows in another currency are never mixed in.
+- *Unusual expense* — a single **expense** of the current month reaches or exceeds the
+  threshold, in its currency. This is a fixed amount threshold, not an anomaly score.
+  Transactions carrying an `externalRef` (a confirmed prévision, a salary booking) are
+  excluded: machine-booked lines are expected by construction.
+- *Stale integration* — the last successful synchronisation is older than the
+  configured number of days (exactly the threshold old is not stale). A connection
+  that never synchronised is not "stale": its data is missing, and the Integrations
+  page already says so.
+- *Overdue event* — a property cashflow has a due date in the past and is not settled
+  (`isCashflowOverdue`, the same reading the real-estate page shows), and it is late by
+  **more** than the grace period (grace 0 → the day after the due date). An unresolved
+  entry still counts; its reason then says "montant inconnu" instead of a figure.
+
+**Duplicates and the lifecycle.** Each alert carries a fingerprint — rule + entity +
+period — unique per owner, which is what suppresses duplicates: re-evaluating the same
+condition refreshes the episode (`triggeredAt` untouched, inputs and `lastSeenAt`
+moved) instead of stacking a second row. A dismissed alert stays dismissed while the
+condition holds; when the condition disappears the episode **resolves**, and if it
+triggers again later the row **reopens** as a fresh episode. Disabling a rule closes
+its open episodes the same way, so re-enabling it asks anew.
+
+**What is stored is not the sentence.** A row keeps its message *inputs* as plain
+strings — amounts, names, dates, computed gaps — and the French reason is recomputed
+from them at render time. A forged request can therefore never write the text a page
+shows, and wording changes never need a migration. Rule configuration is one row per
+kind (`AlertRule`); a missing row means defaults, amounts always name their currency
+so nothing is converted, and the settings form spells out each rule's semantics
+beside its fields.
 
 ## Security model
 

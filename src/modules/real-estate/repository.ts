@@ -8,6 +8,7 @@ import {
   type PropertyOccupancy,
   type PropertySummary,
 } from "./domain";
+import type { DueCashflow } from "./alerts";
 
 /** Real-estate persistence. Every query is scoped to the owner. */
 
@@ -170,4 +171,56 @@ export async function createCashflow(input: {
     },
     select: { id: true },
   });
+}
+
+/**
+ * Unsettled cashflows whose due date has arrived, for the overdue alert rule.
+ *
+ * The owner filter goes through the property (`PropertyCashflow` carries no `userId` of
+ * its own), the query is bounded to due dates up to `until`, and the rule re-checks the
+ * overdue condition itself — this read only narrows the rows. The amount is resolved
+ * here the way totals resolve it (entry amount, else linked transaction), and stays
+ * `null` when neither exists: the rule then reports "unknown", never zero.
+ */
+export async function listDueCashflows(
+  userId: string,
+  options: { until?: Date } = {},
+): Promise<DueCashflow[]> {
+  const until = options.until ?? new Date();
+
+  const rows = await getPrisma().propertyCashflow.findMany({
+    where: {
+      property: { userId },
+      settledAt: null,
+      dueDate: { not: null, lte: until },
+    },
+    orderBy: { dueDate: "asc" },
+    select: {
+      id: true,
+      kind: true,
+      label: true,
+      currency: true,
+      amount: true,
+      dueDate: true,
+      settledAt: true,
+      property: { select: { id: true, name: true } },
+      transaction: { select: { amount: true } },
+    },
+  });
+
+  return rows.map((row) => ({
+    id: row.id,
+    propertyId: row.property.id,
+    propertyName: row.property.name,
+    label: row.label,
+    kind: row.kind as CashflowKind,
+    currency: assertCurrency(row.currency),
+    amount: row.amount
+      ? new Decimal(row.amount.toString())
+      : row.transaction
+        ? new Decimal(row.transaction.amount.toString())
+        : null,
+    dueDate: row.dueDate,
+    settledAt: row.settledAt,
+  }));
 }

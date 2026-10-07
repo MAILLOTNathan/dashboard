@@ -51,6 +51,16 @@ Working today:
   click.
   Submitted values stay in the transaction and cashflow forms, so a second line is a
   small edit; the one-shot forms (account, category, property, password) clear themselves.
+- Alerts: an **Alertes** page watches five deterministic rules — low account balance,
+  budget overrun, expense above a threshold, stale synchronisation, overdue property
+  cashflow — each with its own configurable threshold and an explanation spelled out
+  next to the setting. The engine runs on demand (opening the page or the dashboard),
+  and the dashboard shows a banner as soon as an alert is active. Every alert states the
+  data that triggered it; duplicates are suppressed by a fingerprint (rule + entity +
+  period), dismissing one silences it until the situation resolves, and nothing ever
+  writes to the ledger automatically. Missing data is never treated as an anomaly: an
+  account with no operation, a never-synced connection or a partially-read month keeps
+  the rule quiet.
 - Real estate: properties and cashflow entries entered from the real-estate
   page, occupancy status, totals, due dates.
 - GitHub / GitLab connections: read-only adapters, encrypted tokens, manual

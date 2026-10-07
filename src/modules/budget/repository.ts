@@ -1211,3 +1211,27 @@ export async function readAccountBalance(
     balance: new Decimal(result._sum.amount?.toString() ?? "0"),
   };
 }
+
+/**
+ * The recorded balances of every account that has at least one transaction.
+ *
+ * One aggregate for the whole owner instead of one query per account. An account with
+ * no row here has nothing recorded — its balance is **unknown**, which is not a zero,
+ * and the caller must say so rather than treat it as one.
+ */
+export async function listAccountBalanceTotals(
+  userId: string,
+): Promise<{ accountId: string; transactionCount: number; balance: Decimal }[]> {
+  const rows = await getPrisma().transaction.groupBy({
+    by: ["accountId"],
+    where: { userId },
+    _count: { _all: true },
+    _sum: { amount: true },
+  });
+
+  return rows.map((row) => ({
+    accountId: row.accountId,
+    transactionCount: row._count._all,
+    balance: new Decimal(row._sum.amount?.toString() ?? "0"),
+  }));
+}

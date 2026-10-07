@@ -26,7 +26,7 @@ read-only; personal and company data are not mixed.
 
 ```text
 src/
-  app/(app)/         authenticated pages: account, budget, dashboard, integrations, real-estate
+  app/(app)/         authenticated pages: account, alerts, budget, dashboard, integrations, real-estate
   app/api/           Route Handlers: auth callbacks + CSV export (401 JSON, never a redirect)
   app/login/         sign-in page
   components/        shared UI (forms, server-rendered SVG charts, navigation)
@@ -44,7 +44,7 @@ docs/                architecture/overview.md, decisions/
 
 `User` (sole owner) owns `Account`, `Category`, `Transaction`, `Budget`,
 `RecurringEntry`, `Goal`, `SalarySetting`, `WorkDay`, `Property`,
-`IntegrationConnection`. Key rules:
+`IntegrationConnection`, `Alert`, `AlertRule`. Key rules:
 
 - `Transaction.amount` is `Decimal(18, 2)`, signed (negative = outflow); never floats.
 - `Transaction.operationDate` is `DATE`; instants are `timestamptz(3)` UTC.
@@ -59,6 +59,10 @@ docs/                architecture/overview.md, decisions/
   (mutually exclusive, enforced by the action): the linked form reads the signed sum of
   the account's transactions, and missing data reads "unknown", never zero. Linking is
   owner-scoped and same-currency — no conversion is ever applied.
+- `Alert` stores one episode per watched condition: `fingerprint` (unique with the
+  owner), `status` (ACTIVE / DISMISSED / RESOLVED), and `inputs` as `Json` — message
+  inputs only, never the displayed sentence. `AlertRule` holds one configuration per
+  kind (enabled, one of thresholdAmount/thresholdCurrency/thresholdPercent/thresholdDays).
 - `PropertyCashflow` carries **either** a typed `amount` **or** a `transactionId`
   (mutually exclusive, link unique): no double counting in property totals.
 - `IntegrationConnection.credentialsCiphertext` holds the AES-256-GCM token; it is
@@ -166,6 +170,17 @@ http://dashboard.localhost:8888 (the proxy belongs to the `full` profile).
   combinable filters validated against present data, milestones); encrypted tokens;
   manual idempotent sync (`src/jobs/sync.ts`), fetch bounded on purpose. GitLab is
   limited to project metadata by policy.
+- Alerts (`/alerts`, « Alertes » in the nav): deterministic rules only (low balance,
+  budget overrun, unusual expense, stale integration, overdue cashflow), evaluated
+  server-side on demand by one bounded pass that the dashboard and the alert page run
+  while rendering. Alerts never write to the ledger; each row stores message **inputs**
+  (strings), and the French reason is recomputed by `describeAlert`. Fingerprint
+  (rule + entity + period, unique per owner) suppresses duplicates; dismissing silences
+  an episode until it resolves, after which a re-trigger reopens it. Rules are
+  configurable per kind (`AlertRule`, empty threshold = default; amount thresholds
+  always name a currency — no conversion) and disabling one closes its open episodes.
+  Missing data is never a zero: an account without transactions, a never-synced
+  connection, or a truncated month read keeps the rule quiet.
 - Dashboard: month totals per currency, budget tracking (planned vs actual per
   currency and kind, the remaining drives the card tone, no card when no budget
   exists), indicators from stored snapshots; distinguishes "no data" /

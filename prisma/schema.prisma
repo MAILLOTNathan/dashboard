@@ -101,6 +101,25 @@ enum GoalStatus {
   ABANDONED
 }
 
+/// The well-understood situations the alert engine watches. Deterministic rules only:
+/// no statistical heuristics in the first pass.
+enum AlertKind {
+  LOW_BALANCE
+  BUDGET_OVERRUN
+  UNUSUAL_EXPENSE
+  STALE_INTEGRATION
+  OVERDUE_EVENT
+}
+
+/// The lifecycle of one alert. `DISMISSED` is the owner's choice and sticks while the
+/// condition holds; `RESOLVED` means the condition stopped being true — a resolved
+/// alert that triggers again reopens, a dismissed one waits for that resolution first.
+enum AlertStatus {
+  ACTIVE
+  DISMISSED
+  RESOLVED
+}
+
 /// An open issue and an open pull request arrive from the same provider endpoint;
 /// they stay distinct because they call for different actions.
 enum IssueKind {
@@ -128,6 +147,8 @@ model User {
   goals       Goal[]
   properties  Property[]
   connections IntegrationConnection[]
+  alerts      Alert[]
+  alertRules  AlertRule[]
 }
 
 /// A manually tracked account. No banking credentials are ever stored here.
@@ -555,4 +576,63 @@ model SyncRun {
   connection IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
 
   @@index([connectionId, startedAt])
+}
+
+/// One evaluated warning about the owner's data (see `src/modules/alerts`).
+///
+/// The row never stores free text: `inputs` holds the message inputs as plain strings
+/// (amounts, names, dates, computed gaps) and the French reason is recomputed from them
+/// at render time, so a forged request can never write the sentence a page displays.
+/// The `fingerprint` (rule + entity + period) is unique per owner: re-evaluating the
+/// same condition refreshes the row instead of duplicating it, and the unicity also
+/// absorbs a concurrent double evaluation.
+///
+/// Alerts are observations only — no rule ever writes to the ledger.
+model Alert {
+  id          String      @id @default(cuid())
+  userId      String
+  kind        AlertKind
+  /// Stable identity of the watched condition: rule + entity + period.
+  fingerprint String
+  status      AlertStatus @default(ACTIVE)
+  /// Message inputs, strings only, recomputed into the displayed reason.
+  inputs      Json
+  /// When the current open episode started (reset on every re-trigger).
+  triggeredAt DateTime    @default(now()) @db.Timestamptz(3)
+  /// Last evaluation that still saw the condition.
+  lastSeenAt  DateTime    @db.Timestamptz(3)
+  dismissedAt DateTime?   @db.Timestamptz(3)
+  resolvedAt  DateTime?   @db.Timestamptz(3)
+  createdAt   DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime    @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, fingerprint])
+  @@index([userId, status])
+}
+
+/// One rule's configuration, per owner and kind.
+///
+/// A missing row means "defaults" (`ALERT_RULE_DEFAULTS` in `src/modules/alerts`),
+/// so the engine works before any settings are saved. Only the thresholds that make
+/// sense for a kind are set: an amount for `LOW_BALANCE` and `UNUSUAL_EXPENSE` (with
+/// its currency — amounts in another currency are never compared, they are skipped),
+/// a percentage for `BUDGET_OVERRUN`, a number of days for `STALE_INTEGRATION` and
+/// `OVERDUE_EVENT`.
+model AlertRule {
+  id                String    @id @default(cuid())
+  userId            String
+  kind              AlertKind
+  enabled           Boolean   @default(true)
+  thresholdAmount   Decimal?  @db.Decimal(18, 2)
+  thresholdCurrency String?   @db.Char(3)
+  thresholdPercent  Decimal?  @db.Decimal(6, 2)
+  thresholdDays     Int?
+  createdAt         DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime  @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, kind])
 }

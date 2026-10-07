@@ -5,6 +5,8 @@ import {
   monthRange,
   parseMonthKey,
 } from "@/lib/dates";
+import { describeAlert, type AlertKind, type AlertTone } from "@/modules/alerts/domain";
+import { listAlerts } from "@/modules/alerts/repository";
 import { buildBudgetReport, summariseBudgetReport, type BudgetReportTotal } from "@/modules/budget/report";
 import {
   countTransactions,
@@ -60,6 +62,16 @@ export type DashboardIntegrationSummary = {
   stale: boolean;
 };
 
+/** One open alert, as the dashboard banner shows it: explained, never forged. */
+export type DashboardAlert = {
+  id: string;
+  kind: AlertKind;
+  title: string;
+  reason: string;
+  tone: AlertTone;
+  triggeredAt: Date;
+};
+
 export type DashboardOverview = {
   monthKey: string;
   monthLabel: string;
@@ -68,6 +80,8 @@ export type DashboardOverview = {
   budgetTracking: DashboardBudgetTracking;
   realEstate: { propertyCount: number };
   integrations: DashboardIntegrationSummary[];
+  /** Alerts currently open, read from the stored episodes (the page refreshes them). */
+  alerts: { active: DashboardAlert[] };
 };
 
 export async function getDashboardOverview(
@@ -87,6 +101,7 @@ export async function getDashboardOverview(
     accounts,
     monthBudgets,
     monthSeries,
+    alerts,
   ] = await Promise.all([
     listTransactions(userId, { from: range.start, to: range.end }),
     countTransactions(userId),
@@ -97,6 +112,9 @@ export async function getDashboardOverview(
     // The same read as the 'Suivi' tab, so both screens compare the budgets to the same
     // transactions; reaching the bound is reported through `truncated`.
     listTransactionsForSeries(userId, { from: range.start, to: range.end }),
+    // The stored episodes: the page runs the evaluation pass before this read, so the
+    // banner shows what the engine just found, not what it found last time.
+    listAlerts(userId),
   ]);
 
   const allTransactions = await listTransactions(userId);
@@ -131,5 +149,15 @@ export async function getDashboardOverview(
       stale:
         connection.lastSyncedAt !== null && isSyncStale(connection.lastSyncedAt, now),
     })),
+    alerts: {
+      active: alerts
+        .filter((alert) => alert.status === "ACTIVE")
+        .map((alert) => ({
+          id: alert.id,
+          kind: alert.kind,
+          triggeredAt: alert.triggeredAt,
+          ...describeAlert({ kind: alert.kind, inputs: alert.inputs }),
+        })),
+    },
   };
 }
