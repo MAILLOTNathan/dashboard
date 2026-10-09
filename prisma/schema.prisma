@@ -145,6 +145,7 @@ model User {
   transactions Transaction[]
   budgets     Budget[]
   salarySetting SalarySetting?
+  salaryRates SalaryRate[]
   workDays    WorkDay[]
   recurringEntries RecurringEntry[]
   recurringOccurrences RecurringOccurrence[]
@@ -256,14 +257,11 @@ model Budget {
   @@index([userId, year, month])
 }
 
-/// The owner's wage, reduced to the one unit the simulation needs: an exact hourly
-/// rate. Weekly and monthly amounts are only derived figures shown next to it (see
-/// `salaryEquivalents`), never stored in those units.
+/// The simulator's options, common to every month: the default length of a plannable
+/// day and the currency. The hourly rate itself is month-scoped (see `SalaryRate`).
 model SalarySetting {
   id         String   @id @default(cuid())
   userId     String   @unique
-  /// Exact hourly rate, in `currency`.
-  hourlyRate Decimal  @db.Decimal(18, 2)
   /// Default length of a plannable day, in hours. Applies to future clicks only.
   hoursPerDay Decimal @db.Decimal(4, 2)
   currency   String   @default("EUR") @db.Char(3)
@@ -271,6 +269,25 @@ model SalarySetting {
   updatedAt  DateTime @updatedAt @db.Timestamptz(3)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// One hourly-rate change point: the rate applies **from this month on**, until the next
+/// entry. Resolving a month means reading the most recent entry at or before it, like an
+/// effective-dated wage; a month before the first entry has no rate at all (its
+/// simulation is unavailable rather than computed from an invented default).
+model SalaryRate {
+  id         String   @id @default(cuid())
+  userId     String
+  year       Int
+  month      Int
+  /// Exact hourly rate, in the simulator's currency.
+  hourlyRate Decimal  @db.Decimal(18, 2)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, year, month])
 }
 
 /// One clicked day of the salary calendar. The status is the level the owner reached:

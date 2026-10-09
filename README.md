@@ -65,11 +65,12 @@ Working today:
   in months next to it. It reads the
   recorded balance of the accounts typed as savings — an unrecorded account stays
   unknown, never zero.
-  A **Salaire** tab simulates earnings from an hourly rate: one click on the calendar
-  plans a day, a second marks it really worked, a third clears it. A booking button
-  records the month's simulated amount (planned and worked days, each counted once) as
-  one income entry, in a default « Salaire » category — nothing is written before that
-  click.
+  A **Salaire** tab simulates earnings from an hourly rate **set per month** (a change
+  point: it applies from the month you save it on, until the next one): one click on the
+  calendar plans a day, a second marks it really worked, a third clears it. A booking
+  button records the month's simulated amount (planned and worked days, each counted
+  once, at that month's rate) as one income entry, in a default « Salaire » category —
+  nothing is written before that click.
   A **Comptes** tab manages the reference data: recorded balances and the projected
   end-of-month balance per account (recorded balance + the month's pending occurrences,
   never the simulated salary), account rename/retype (the currency only while the

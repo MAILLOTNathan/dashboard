@@ -1,14 +1,17 @@
 import Decimal from "decimal.js";
 import { z } from "zod";
-import { monthRange, toDateOnlyString } from "@/lib/dates";
+import { formatMonthLabel, monthRange, toDateOnlyString } from "@/lib/dates";
 import { parseAmountInput, type Currency } from "@/lib/money";
 import { amount, currencyCode, requiredDate } from "@/lib/validation";
 import { budgetMonthKey, budgetMonthSchema } from "./domain";
+import type { ForecastContribution } from "./recurrence";
 
 /**
  * Salary simulation: a wage, and a calendar of days that are planned then worked.
  *
- * The owner enters **one** figure — an hourly rate — and clicks days on a month calendar.
+ * The owner enters an hourly rate **per month** — effective-dated, like a wage: a rate
+ * saved for a month applies from that month on, until the next change point — and clicks
+ * days on a month calendar.
  * A day has two levels, expressed by its status: the first click plans it (it feeds the
  * simulated budget), the second marks it really worked (it feeds the amount actually
  * earned), and a third click removes it. The two states are disjoint, so a total never
@@ -41,11 +44,50 @@ export const MAX_WORK_DAY_HOURS = new Decimal(24);
 export const WORK_DAYS_PER_WEEK = 5;
 
 export type SalarySettingRecord = {
-  hourlyRate: Decimal;
   /** Default length of a plannable day, applied to future clicks only. */
   hoursPerDay: Decimal;
   currency: Currency;
 };
+
+/** One hourly-rate change point: effective from its month until the next entry. */
+export type SalaryRateRecord = {
+  year: number;
+  month: number;
+  hourlyRate: Decimal;
+};
+
+/**
+ * The rate in force for a month, or `null` when no entry covers it.
+ *
+ * The rule, documented once: the most recent change point at or before the month wins.
+ * Before the first entry there is no rate at all — the simulation stays unavailable
+ * rather than computed from an invented default, the same unknown-never-zero rule as
+ * everywhere else. Pure on purpose: the caller hands in the owner's rows.
+ */
+export function resolveSalaryRate(
+  rates: readonly SalaryRateRecord[],
+  year: number,
+  month: number,
+): SalaryRateRecord | null {
+  let resolved: SalaryRateRecord | null = null;
+
+  for (const rate of rates) {
+    const isAtOrBefore = rate.year < year || (rate.year === year && rate.month <= month);
+    if (!isAtOrBefore) {
+      continue;
+    }
+
+    const isLatest =
+      resolved === null ||
+      rate.year > resolved.year ||
+      (rate.year === resolved.year && rate.month > resolved.month);
+    if (isLatest) {
+      resolved = rate;
+    }
+  }
+
+  return resolved;
+}
 
 export type WorkDayRecord = {
   /** Calendar day at UTC midnight, like every operation date. */
@@ -155,6 +197,41 @@ export function salaryEquivalents(
   };
 }
 
+/**
+ * The month's salary as one expected movement, or `null` when there is nothing to show.
+ *
+ * A registered month wins with the amount that really lands (`salary:YYYY-MM` booking):
+ * the booking is the fact, a calendar edited afterwards must not rewrite it. Without a
+ * booking, clicked days give the simulated total at the month's rate as a pending
+ * INCOME. With no clicked day there is no movement at all — an empty calendar is not a
+ * zero wage. The caller supplies the month's rows; this function never filters by date.
+ */
+export function salaryMonthContribution(input: {
+  rate: { hourlyRate: Decimal; currency: Currency } | null;
+  days: readonly WorkDayRecord[];
+  booking: { amount: Decimal; currency: Currency } | null;
+}): ForecastContribution | null {
+  if (input.booking) {
+    return {
+      currency: input.booking.currency,
+      type: "INCOME",
+      amount: input.booking.amount,
+      status: "CONFIRMED",
+    };
+  }
+
+  if (!input.rate || input.days.length === 0) {
+    return null;
+  }
+
+  return {
+    currency: input.rate.currency,
+    type: "INCOME",
+    amount: computeSalarySummary(input.days, input.rate.hourlyRate).totalAmount,
+    status: "PENDING",
+  };
+}
+
 const HOURS_MESSAGE = "Heures invalides : attendu un nombre entre 0 et 24 (ex. 7 ou 7,5).";
 
 /**
@@ -184,8 +261,13 @@ export const hoursPerDaySchema = z
     return parsed;
   });
 
-/** The wage of this owner. One setting per owner, so the form is an upsert. */
+/**
+ * The simulator's form: the rate of one month (a change point, effective from that month)
+ * and the two global options. One payload so the single form can edit either side
+ * without a second submit.
+ */
 export const salarySettingInputSchema = z.object({
+  month: budgetMonthSchema,
   hourlyRate: amount.refine(
     (value) => value.greaterThan(0),
     "Le taux horaire doit être supérieur à zéro.",
@@ -232,6 +314,14 @@ export function salaryBookingRef(year: number, month: number): string {
 /** Message shared by the pre-check and the constraint-violation path of a booking. */
 export const DUPLICATE_SALARY_BOOKING_MESSAGE =
   "La recette de ce mois est déjà enregistrée.";
+
+/**
+ * Shared wording when a month has no rate at all (it precedes every change point): the
+ * simulation and the booking refuse rather than default to an invented figure.
+ */
+export function noSalaryRateMessage(year: number, month: number): string {
+  return `Aucun taux horaire pour ${formatMonthLabel(year, month)} : définissez-le d'abord dans le simulateur Salaire — le taux s'applique à partir du mois saisi.`;
+}
 
 /** Fields the booking form edits: the account to credit, and the operation date. */
 export const salaryBookingFormSchema = z.object({

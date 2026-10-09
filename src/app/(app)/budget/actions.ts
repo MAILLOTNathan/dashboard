@@ -53,6 +53,7 @@ import {
   findTransaction,
   findTransactionByExternalRef,
   findWorkDay,
+  listSalaryRates,
   listWorkDays,
   mergeCategories,
   setAccountArchived,
@@ -62,6 +63,7 @@ import {
   updateCategory,
   updateTransaction,
   updateWorkDay,
+  upsertSalaryRate,
   upsertSalarySetting,
 } from "@/modules/budget/repository";
 import {
@@ -69,6 +71,8 @@ import {
   computeSalarySummary,
   DUPLICATE_SALARY_BOOKING_MESSAGE,
   nextWorkDayState,
+  noSalaryRateMessage,
+  resolveSalaryRate,
   SALARY_CATEGORY_NAME,
   salaryBookingInputSchema,
   salaryBookingRef,
@@ -423,11 +427,13 @@ export async function deleteBudgetAction(values: unknown): Promise<ActionResult>
 }
 
 /**
- * Saves the owner's hourly rate and default day length.
+ * Saves the simulator: the displayed month's hourly rate, plus the two global options.
  *
- * One setting per owner: the form creates it on first use and replaces it afterwards.
- * Only the rate is stored — the weekly and monthly figures shown next to it are derived
- * at render time (see `salaryEquivalents`).
+ * The rate is a **change point** — it applies from the submitted month on, until the
+ * next entry — so a row is only written when the month's resolved rate actually changes:
+ * editing the day length must not sprinkle redundant rows. Only the rate is stored; the
+ * weekly and monthly figures shown next to it are derived at render time (see
+ * `salaryEquivalents`).
  */
 export async function saveSalarySettingAction(values: unknown): Promise<ActionResult> {
   const user = await requireUser();
@@ -437,10 +443,23 @@ export async function saveSalarySettingAction(values: unknown): Promise<ActionRe
     return invalidResult(parsed.error);
   }
 
+  const { year, month } = parsed.data.month;
+
   try {
+    const rates = await listSalaryRates(user.id);
+    const current = resolveSalaryRate(rates, year, month);
+
+    if (!current || !current.hourlyRate.equals(parsed.data.hourlyRate)) {
+      await upsertSalaryRate({
+        userId: user.id,
+        year,
+        month,
+        hourlyRate: parsed.data.hourlyRate,
+      });
+    }
+
     await upsertSalarySetting({
       userId: user.id,
-      hourlyRate: parsed.data.hourlyRate,
       hoursPerDay: parsed.data.hoursPerDay,
       currency: parsed.data.currency,
     });
@@ -472,15 +491,16 @@ export async function cycleWorkDayAction(values: unknown): Promise<ActionResult>
   const date = parsed.data.date;
 
   try {
-    const [setting, current] = await Promise.all([
+    const [setting, current, rates] = await Promise.all([
       findSalarySetting(user.id),
       findWorkDay(user.id, date),
+      listSalaryRates(user.id),
     ]);
 
     if (!setting) {
       return rejectedResult(
         "date",
-        "Renseignez d'abord votre taux horaire : il transforme les heures cliquées en montants.",
+        "Renseignez d'abord le taux horaire et les heures par jour : ils transforment les jours cliqués en montants.",
       );
     }
 
@@ -489,6 +509,17 @@ export async function cycleWorkDayAction(values: unknown): Promise<ActionResult>
     if (next === "REMOVE") {
       await deleteWorkDay(user.id, date);
     } else if (current === null) {
+      // Planning a day needs the month's rate: without one, the day could never produce
+      // an amount, and the calendar would lead nowhere.
+      const monthOfDay = date.getUTCMonth() + 1;
+      const rate = resolveSalaryRate(rates, date.getUTCFullYear(), monthOfDay);
+      if (!rate) {
+        return rejectedResult(
+          "date",
+          noSalaryRateMessage(date.getUTCFullYear(), monthOfDay),
+        );
+      }
+
       await createWorkDay({
         userId: user.id,
         date,
@@ -563,16 +594,22 @@ export async function bookSalaryAction(values: unknown): Promise<ActionResult> {
   const { month, accountId, date } = parsed.data;
 
   try {
-    const [setting, account] = await Promise.all([
+    const [setting, account, rates] = await Promise.all([
       findSalarySetting(user.id),
       findAccount(user.id, accountId),
+      listSalaryRates(user.id),
     ]);
 
     if (!setting) {
       return rejectedResult(
         "accountId",
-        "Renseignez d'abord votre taux horaire : il transforme les heures en montants.",
+        "Renseignez d'abord le taux horaire et les heures par jour : ils transforment les heures en montants.",
       );
+    }
+
+    const rate = resolveSalaryRate(rates, month.year, month.month);
+    if (!rate) {
+      return rejectedResult("accountId", noSalaryRateMessage(month.year, month.month));
     }
 
     if (!account) {
@@ -594,7 +631,7 @@ export async function bookSalaryAction(values: unknown): Promise<ActionResult> {
 
     const range = monthRange(month.year, month.month);
     const workDays = await listWorkDays(user.id, { from: range.start, to: range.end });
-    const summary = computeSalarySummary(workDays, setting.hourlyRate);
+    const summary = computeSalarySummary(workDays, rate.hourlyRate);
 
     if (summary.totalAmount.isZero()) {
       return rejectedResult(

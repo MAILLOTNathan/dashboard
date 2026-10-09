@@ -43,7 +43,7 @@ docs/                architecture/overview.md, decisions/
 ## Data model (`prisma/schema.prisma`)
 
 `User` (sole owner) owns `Account`, `Category`, `Transaction`, `Budget`,
-`RecurringEntry`, `Goal`, `SalarySetting`, `WorkDay`, `Property`,
+`RecurringEntry`, `Goal`, `SalarySetting`, `SalaryRate`, `WorkDay`, `Property`,
 `IntegrationConnection`, `Alert`, `AlertRule`. Key rules:
 
 - `Transaction.amount` is `Decimal(18, 2)`, signed (negative = outflow); never floats.
@@ -55,7 +55,9 @@ docs/                architecture/overview.md, decisions/
   statement; empty = not checked yet (a state, not a missing value).
 - `Budget.amount` is `Decimal(18, 2)` and always positive (a planned magnitude);
   one row per `(userId, categoryId, year, month, currency)` unique tuple.
-- `SalarySetting` (one per owner: hourly rate, default hours per day, currency) and
+- `SalarySetting` (one per owner: default hours per day, currency — global options) and
+  `SalaryRate` (one per owner and month: the hourly rate as a change point, effective
+  from that month until the next entry; a month before the first entry has no rate) plus
   `WorkDay` (one per owner and date: `PLANNED`/`WORKED` + hours) power the salary
   simulator; its booking button writes one INCOME transaction per month (`externalRef`
   `salary:YYYY-MM`, category « Salaire », seeded as a default category).
@@ -179,8 +181,12 @@ http://dashboard.localhost:8888 (the proxy belongs to the `full` profile).
   échéances table (registration form in the row; once recorded, listed among the
   month's decisions) and recorded through the same booking as the Salaire tab, plus
   per-currency prévisionnel totals above the list, and a 6-month scheduler below it,
-  computed from the calendar, with the salary simulator's amounts still
-  absent from every actual total), Objectifs (savings or repayment
+  computed from the calendar and completed with each month's salary — simulated from
+  its clicked days, or the booked amount; a month with no clicked day shows none — and
+  its per-currency simulated end-of-month balance (recorded cumulative before the
+  window, advanced by recorded operations and pending movements, each counted once;
+  « — » when the currency has no recorded operation), while the simulator's amounts
+  stay absent from every actual total), Objectifs (savings or repayment
   targets: current amount from a linked account's recorded balance or a manual starting
   amount plus a dated contribution log, progress as amount + percentage, remaining, and a monthly contribution rounded
   half-up on cents — undefined after the deadline or once reached, and an unknown
@@ -188,7 +194,9 @@ http://dashboard.localhost:8888 (the proxy belongs to the `full` profile).
   **savings threshold**: six months of expected expenses from the recurring series
   (current month + 5, per currency, never stored), compared to the recorded balance of
   the accounts typed SAVINGS — an unrecorded account stays unknown, and a runway in
-  months is shown next to it), Salaire (hourly-rate simulator:
+  months is shown next to it), Salaire (hourly-rate simulator: the rate is a change
+  point, set per month and effective from it until the next entry — a month with no
+  rate at all keeps its calendar and booking refused;
   one click plans a day, a second marks it worked, a third clears it; a booking button
   records the month's simulated amount — planned and worked days, each once — as one
   INCOME in the default « Salaire » category) and Comptes (balances, projected

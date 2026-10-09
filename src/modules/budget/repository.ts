@@ -13,7 +13,7 @@ import type {
   TransactionRecord,
   TransactionType,
 } from "./domain";
-import type { SalarySettingRecord, WorkDayRecord, WorkDayStatus } from "./salary";
+import type { SalaryRateRecord, SalarySettingRecord, WorkDayRecord, WorkDayStatus } from "./salary";
 import {
   plannedOccurrences,
   type ForecastType,
@@ -1101,19 +1101,18 @@ export async function deleteBudget(
 /**
  * Salary simulation.
  *
- * One setting per owner, one work day per (owner, date): every statement filters on
- * `userId`, and the unique constraints hold those rules at the database level too.
+ * One options row per owner, one rate change point per (owner, month), one work day per
+ * (owner, date): every statement filters on `userId`, and the unique constraints hold
+ * those rules at the database level too.
  */
 
 const SALARY_SETTING_SELECT = {
-  hourlyRate: true,
   hoursPerDay: true,
   currency: true,
 } as const;
 
 /** Declared structurally, so the mapper does not depend on the generated client type. */
 type SalarySettingRow = {
-  hourlyRate: { toString(): string };
   hoursPerDay: { toString(): string };
   currency: string;
 };
@@ -1122,7 +1121,6 @@ function toSalarySettingRecord(row: SalarySettingRow): SalarySettingRecord {
   return {
     // Prisma exposes a numeric type: converting through its string form keeps the value
     // exact and gives the domain a plain decimal.js instance.
-    hourlyRate: new Decimal(row.hourlyRate.toString()),
     hoursPerDay: new Decimal(row.hoursPerDay.toString()),
     currency: assertCurrency(row.currency),
   };
@@ -1139,10 +1137,12 @@ export async function findSalarySetting(
   return row ? toSalarySettingRecord(row) : null;
 }
 
-/** Creates or replaces the owner's wage. One setting per owner: the form is an upsert. */
+/**
+ * Creates or replaces the owner's simulator options (one row per owner: an upsert).
+ * The hourly rate is month-scoped and lives in `SalaryRate`.
+ */
 export async function upsertSalarySetting(input: {
   userId: string;
-  hourlyRate: Decimal;
   hoursPerDay: Decimal;
   currency: Currency;
 }): Promise<void> {
@@ -1150,15 +1150,73 @@ export async function upsertSalarySetting(input: {
     where: { userId: input.userId },
     create: {
       userId: input.userId,
-      hourlyRate: input.hourlyRate.toFixed(2),
       hoursPerDay: input.hoursPerDay.toFixed(2),
       currency: input.currency,
     },
     update: {
-      hourlyRate: input.hourlyRate.toFixed(2),
       hoursPerDay: input.hoursPerDay.toFixed(2),
       currency: input.currency,
     },
+  });
+}
+
+const SALARY_RATE_SELECT = { year: true, month: true, hourlyRate: true } as const;
+
+type SalaryRateRow = {
+  year: number;
+  month: number;
+  hourlyRate: { toString(): string };
+};
+
+function toSalaryRateRecord(row: SalaryRateRow): SalaryRateRecord {
+  return {
+    year: row.year,
+    month: row.month,
+    hourlyRate: new Decimal(row.hourlyRate.toString()),
+  };
+}
+
+/**
+ * Every rate change point of this owner, oldest first.
+ *
+ * The table is inherently small (one row per raise), so callers resolve a month in
+ * memory with `resolveSalaryRate` instead of asking a second question per month.
+ */
+export async function listSalaryRates(userId: string): Promise<SalaryRateRecord[]> {
+  const rows = await getPrisma().salaryRate.findMany({
+    where: { userId },
+    orderBy: [{ year: "asc" }, { month: "asc" }],
+    select: SALARY_RATE_SELECT,
+  });
+
+  return rows.map(toSalaryRateRecord);
+}
+
+/**
+ * Writes the rate for one month. The unique (owner, year, month) makes it an upsert:
+ * saving the same month again corrects its change point instead of piling rows up.
+ */
+export async function upsertSalaryRate(input: {
+  userId: string;
+  year: number;
+  month: number;
+  hourlyRate: Decimal;
+}): Promise<void> {
+  await getPrisma().salaryRate.upsert({
+    where: {
+      userId_year_month: {
+        userId: input.userId,
+        year: input.year,
+        month: input.month,
+      },
+    },
+    create: {
+      userId: input.userId,
+      year: input.year,
+      month: input.month,
+      hourlyRate: input.hourlyRate.toFixed(2),
+    },
+    update: { hourlyRate: input.hourlyRate.toFixed(2) },
   });
 }
 
@@ -1887,14 +1945,19 @@ export async function listAccountBalanceTotals(
  *
  * Exists because summing in memory meant reading through the table's page bound: past
  * that bound the "total" would quietly stop being the total. A currency absent from the
- * map has no transaction at all — no row, not a zero.
+ * map has no transaction at all — no row, not a zero. `before` restricts the sum to the
+ * operations dated strictly earlier, the starting point of a simulated balance.
  */
 export async function sumTransactionsByCurrency(
   userId: string,
+  window: { before?: Date } = {},
 ): Promise<Map<Currency, Decimal>> {
   const rows = await getPrisma().transaction.groupBy({
     by: ["currency"],
-    where: { userId },
+    where: {
+      userId,
+      ...(window.before ? { operationDate: { lt: window.before } } : {}),
+    },
     _sum: { amount: true },
   });
 

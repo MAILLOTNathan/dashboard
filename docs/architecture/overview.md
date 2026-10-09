@@ -216,16 +216,22 @@ asked for: a cascade here would silently change what a property is worth.
   only written into the accounts through the explicit booking button. A day clicked once
   is `PLANNED`, clicked twice `WORKED`, a third click removes it; the two states are
   disjoint, so no day counts twice:
-  - *planned* — sum of the hours of `PLANNED` days × the hourly rate.
-  - *worked* — sum of the hours of `WORKED` days × the hourly rate.
+  - *hourly rate* — month-scoped (`SalaryRate` change points): a rate saved for a month
+    applies from that month on, until the next entry. A month before the first entry has
+    no rate at all — its simulation and its booking are refused rather than computed
+    from an invented default. The day length and the currency are global simulator
+    options (`SalarySetting`, one row per owner).
+  - *planned* — sum of the hours of `PLANNED` days × the month's hourly rate.
+  - *worked* — sum of the hours of `WORKED` days × the month's hourly rate.
   - *total simulated* — planned + worked.
   - *equivalents* — day = rate × configured hours per day; week = day × 5 working days;
     month = week × 52/12. Displayed for information only, never stored.
   - *booking* — one INCOME transaction per month, labelled « Salaire {mois} », category
     « Salaire » (created when missing), amount = the month's **simulated** amount
-    (planned and worked days, each counted once) — the very figure the Prévisions tab
-    displays, so a month can be recorded as soon as it is planned. The unique
-    `(account, externalRef = salary:YYYY-MM)` refuses a second booking of the month.
+    (planned and worked days, each counted once, at the month's rate) — the very figure
+    the Prévisions tab displays, so a month can be recorded as soon as it is planned.
+    The unique `(account, externalRef = salary:YYYY-MM)` refuses a second booking of the
+    month.
 - Recurring forecasts (budget page, « Prévisions » tab) — a planning view kept apart
   from the ledger on purpose. Definitions and occurrences live in their own tables and
   feed **no actual total**: `computeMonthlyTotals`, the budget follow-up and the charts
@@ -239,7 +245,19 @@ asked for: a cascade here would silently change what a property is worth.
   shows the month's **salary prévision** — computed on the fly from the simulator's
   calendar, never stored — as the first row of the échéances, with its registration in
   the row; recording it calls the same booking action as the Salaire tab, so the two
-  tabs can never disagree. Above the list, the tab sums the month into per-currency
+  tabs can never disagree. The **6-month scheduler** below the list projects the same
+  rules forward: each month's per-currency row completes the series' occurrences with
+  the month's salary — the simulation of its clicked days, or the amount already booked
+  — so an upcoming month's expected net includes the wage. A month with no clicked day
+  contributes no salary amount (never a zero), the scheduler never materialises
+  anything, and like every forecast figure these projections stay out of actual totals.
+  Each row also carries a per-currency **simulated balance**: the recorded cumulative
+  strictly before the window, advanced month by month by everything dated in that month
+  — recorded operations (a booked salary included: it is a real transaction) and pending
+  movements (planned occurrences, simulated salary) — so no movement is counted twice and
+  a month never includes money dated later. A currency with no recorded operation at all
+  reads « — »: a balance that was never recorded is not a zero.
+  Above the list, the tab sums the month into per-currency
   **prévisionnel** figures — expected income, expected expenses and the expected net —
   counting pending and confirmed movements (a prévision that came true is still part
   of what the month was expected to be) and excluding passed and dismissed ones. Like

@@ -92,9 +92,9 @@ export default async function BudgetPage({
     analysis: `Analyse de ${monthLabel} : totaux, tendance sur 12 mois, comparaison au mois précédent et à l'an dernier, et répartition par catégorie. Les transferts entre comptes comptent selon leur signe.`,
     budgets: `Budgets de ${monthLabel}, par catégorie et par devise. Les devises ne sont jamais converties.`,
     report: `Suivi du budget de ${monthLabel} : prévu, réalisé et reste par catégorie et par devise, sans conversion.`,
-    forecast: `Prévisions de ${monthLabel} : échéances attendues des séries récurrentes, salaire simulé du mois et échéancier des mois suivants, à confirmer. Rien ne compte dans un total avant d'être enregistré.`,
+    forecast: `Prévisions de ${monthLabel} : échéances attendues des séries récurrentes, salaire simulé du mois et échéancier des six mois suivants — salaire compris, avec solde simulé de fin de mois — à confirmer. Rien ne compte dans un total réel avant d'être enregistré.`,
     goals: "Objectifs d'épargne ou de remboursement : progression, contributions datées, reste à atteindre et seuil de coussin de sécurité. Un solde inconnu ne vaut jamais zéro, et aucune devise n'est convertie.",
-    salary: `Salaire simulé de ${monthLabel} : un taux horaire, un calendrier de jours prévus puis travaillés, et la recette du mois en un clic.`,
+    salary: `Salaire simulé de ${monthLabel} : un taux horaire propre au mois (effectif à partir du mois saisi, jusqu'au prochain taux), un calendrier de jours prévus puis travaillés, et la recette du mois en un clic.`,
     accounts: "Comptes et catégories : soldes enregistrés, solde projeté de fin de mois (échéances en attente comprises), renommage, archivage, fusion et suppression. Tout ce qui est utilisé est dit avant d'être modifié.",
   };
 

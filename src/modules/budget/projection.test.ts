@@ -1,6 +1,7 @@
 import Decimal from "decimal.js";
 import { describe, expect, it } from "vitest";
-import { projectAccountBalance } from "./projection";
+import type { Currency } from "@/lib/money";
+import { buildSimulatedBalances, projectAccountBalance } from "./projection";
 
 /** Fictitious values only. */
 const recorded = (transactionCount: number, balance: string) => ({
@@ -58,5 +59,74 @@ describe("projectAccountBalance", () => {
 
     expect(projection.kind).toBe("KNOWN");
     expect(projection.kind === "KNOWN" && projection.projected.toFixed(2)).toBe("0.00");
+  });
+});
+
+describe("buildSimulatedBalances", () => {
+  const eur = (value: string) => new Decimal(value);
+  /** Currency-keyed maps, like the repository reads produce. */
+  const amounts = (...entries: [Currency, Decimal][]) => new Map<Currency, Decimal>(entries);
+
+  it("advances the recorded base with recorded and pending movements, month by month", () => {
+    // November: the salary is booked (461,25 € recorded) and the series are still pending
+    // (-1 000 €) — the booked salary must not be added a second time as a pending figure.
+    const months = [
+      {
+        key: "2026-11",
+        recorded: amounts(["EUR", eur("461.25")]),
+        pending: amounts(["EUR", eur("-1000")]),
+      },
+      {
+        key: "2026-12",
+        recorded: amounts(),
+        pending: amounts(["EUR", eur("-692.50")]),
+      },
+    ];
+    const result = buildSimulatedBalances({
+      recordedBefore: amounts(["EUR", eur("2679.60")]),
+      months,
+    });
+
+    expect(result[0]?.balances.get("EUR")?.toFixed(2)).toBe("2140.85");
+    expect(result[1]?.balances.get("EUR")?.toFixed(2)).toBe("1448.35");
+  });
+
+  it("knows a currency whose first recorded operation is inside the window", () => {
+    const result = buildSimulatedBalances({
+      recordedBefore: amounts(),
+      months: [
+        { key: "2026-11", recorded: amounts(["USD", eur("100")]), pending: amounts() },
+      ],
+    });
+
+    expect(result[0]?.balances.get("USD")?.toFixed(2)).toBe("100.00");
+  });
+
+  it("leaves an unrecorded currency absent from the balances — not a zero", () => {
+    const result = buildSimulatedBalances({
+      recordedBefore: amounts(),
+      months: [
+        { key: "2026-11", recorded: amounts(), pending: amounts(["EUR", eur("-1000")]) },
+      ],
+    });
+
+    expect(result[0]?.balances.has("EUR")).toBe(false);
+  });
+
+  it("keeps a currency advancing through a month with no row, without mutating snapshots", () => {
+    const months = [
+      {
+        key: "2026-11",
+        recorded: amounts(["USD", eur("100")]),
+        pending: amounts(),
+      },
+      { key: "2026-12", recorded: amounts(), pending: amounts(["USD", eur("20")]) },
+    ];
+    const result = buildSimulatedBalances({ recordedBefore: amounts(), months });
+
+    expect(result[1]?.balances.get("USD")?.toFixed(2)).toBe("120.00");
+    // A later month's copy is independent: editing it cannot rewrite November.
+    result[1]?.balances.set("USD", eur("999"));
+    expect(result[0]?.balances.get("USD")?.toFixed(2)).toBe("100.00");
   });
 });

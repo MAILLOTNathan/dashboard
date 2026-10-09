@@ -13,6 +13,8 @@ const updateBudgetMock = vi.fn();
 const deleteBudgetMock = vi.fn();
 const findSalarySettingMock = vi.fn();
 const upsertSalarySettingMock = vi.fn();
+const listSalaryRatesMock = vi.fn();
+const upsertSalaryRateMock = vi.fn();
 const listWorkDaysMock = vi.fn();
 const findWorkDayMock = vi.fn();
 const createWorkDayMock = vi.fn();
@@ -48,6 +50,8 @@ vi.mock("@/modules/budget/repository", () => ({
   deleteBudget: (...args: unknown[]) => deleteBudgetMock(...args),
   findSalarySetting: (...args: unknown[]) => findSalarySettingMock(...args),
   upsertSalarySetting: (...args: unknown[]) => upsertSalarySettingMock(...args),
+  listSalaryRates: (...args: unknown[]) => listSalaryRatesMock(...args),
+  upsertSalaryRate: (...args: unknown[]) => upsertSalaryRateMock(...args),
   listWorkDays: (...args: unknown[]) => listWorkDaysMock(...args),
   findWorkDay: (...args: unknown[]) => findWorkDayMock(...args),
   createWorkDay: (...args: unknown[]) => createWorkDayMock(...args),
@@ -705,46 +709,75 @@ describe("deleteBudgetAction", () => {
 
 /** Fictitious salary data only. */
 const SALARY_SETTING = {
-  hourlyRate: new Decimal("20.50"),
   hoursPerDay: new Decimal("7.5"),
   currency: "EUR" as const,
 };
+
+/** One change point in August, so October resolves to 20.50 €. */
+const SALARY_RATES = [{ year: 2026, month: 8, hourlyRate: new Decimal("20.50") }];
+
 const WORK_DATE = new Date("2026-10-05T00:00:00.000Z");
 
 describe("saveSalarySettingAction", () => {
   beforeEach(() => {
     requireUserMock.mockReset().mockResolvedValue(OWNER);
+    listSalaryRatesMock.mockReset().mockResolvedValue([]);
+    upsertSalaryRateMock.mockReset().mockResolvedValue(undefined);
     upsertSalarySettingMock.mockReset().mockResolvedValue(undefined);
     revalidatePathMock.mockReset();
   });
 
-  it("stores the rate and the day length for the signed-in owner", async () => {
+  it("stores the month's rate as a change point, plus the global options", async () => {
     const result = await saveSalarySettingAction({
+      month: "2026-10",
       hourlyRate: "20,50",
       hoursPerDay: "7,5",
       currency: "EUR",
     });
 
     expect(result).toEqual({ status: "ok" });
-    expect(upsertSalarySettingMock).toHaveBeenCalledTimes(1);
+    expect(upsertSalaryRateMock).toHaveBeenCalledTimes(1);
 
-    const [input] = upsertSalarySettingMock.mock.calls[0] as [Record<string, unknown>];
+    const [rateInput] = upsertSalaryRateMock.mock.calls[0] as [Record<string, unknown>];
 
-    expect(input.userId).toBe(OWNER.id);
-    expect(input.currency).toBe("EUR");
-    // The typed strings became exact decimals before they reached persistence.
-    expect((input.hourlyRate as { toFixed(scale: number): string }).toFixed(2)).toBe(
+    expect(rateInput.userId).toBe(OWNER.id);
+    expect(rateInput.year).toBe(2026);
+    expect(rateInput.month).toBe(10);
+    // The typed string became an exact decimal before it reached persistence.
+    expect((rateInput.hourlyRate as { toFixed(scale: number): string }).toFixed(2)).toBe(
       "20.50",
     );
-    expect((input.hoursPerDay as { toFixed(scale: number): string }).toFixed(2)).toBe(
+
+    const [settingInput] = upsertSalarySettingMock.mock.calls[0] as [Record<string, unknown>];
+
+    expect(settingInput.userId).toBe(OWNER.id);
+    expect(settingInput.currency).toBe("EUR");
+    expect((settingInput.hoursPerDay as { toFixed(scale: number): string }).toFixed(2)).toBe(
       "7.50",
     );
     expect(revalidatePathMock).toHaveBeenCalledWith("/budget");
   });
 
+  it("writes no redundant change point when the month's rate is unchanged", async () => {
+    listSalaryRatesMock.mockResolvedValue(SALARY_RATES);
+
+    const result = await saveSalarySettingAction({
+      month: "2026-10",
+      hourlyRate: "20,50",
+      hoursPerDay: "8",
+      currency: "EUR",
+    });
+
+    expect(result).toEqual({ status: "ok" });
+    // Editing the day length must not sprinkle change points: only the options move.
+    expect(upsertSalaryRateMock).not.toHaveBeenCalled();
+    expect(upsertSalarySettingMock).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses a rate that is not strictly positive, before writing", async () => {
     for (const hourlyRate of ["0", "-1", "vingt"]) {
       const result = await saveSalarySettingAction({
+        month: "2026-10",
         hourlyRate,
         hoursPerDay: "7",
         currency: "EUR",
@@ -753,33 +786,53 @@ describe("saveSalarySettingAction", () => {
       expect(result.status).toBe("invalid");
     }
 
+    expect(upsertSalaryRateMock).not.toHaveBeenCalled();
     expect(upsertSalarySettingMock).not.toHaveBeenCalled();
   });
 
   it("refuses an implausible day length", async () => {
     const result = await saveSalarySettingAction({
+      month: "2026-10",
       hourlyRate: "20",
       hoursPerDay: "25",
       currency: "EUR",
     });
 
     expect(result.status).toBe("invalid");
-    expect(upsertSalarySettingMock).not.toHaveBeenCalled();
+    expect(upsertSalaryRateMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a month that does not exist", async () => {
+    const result = await saveSalarySettingAction({
+      month: "2026-13",
+      hourlyRate: "20",
+      hoursPerDay: "7",
+      currency: "EUR",
+    });
+
+    expect(result.status).toBe("invalid");
+    expect(upsertSalaryRateMock).not.toHaveBeenCalled();
   });
 
   it("checks the session before touching anything", async () => {
     requireUserMock.mockRejectedValue(new Error("redirect:/login"));
 
     await expect(
-      saveSalarySettingAction({ hourlyRate: "20", hoursPerDay: "7", currency: "EUR" }),
+      saveSalarySettingAction({
+        month: "2026-10",
+        hourlyRate: "20",
+        hoursPerDay: "7",
+        currency: "EUR",
+      }),
     ).rejects.toThrow("redirect:/login");
-    expect(upsertSalarySettingMock).not.toHaveBeenCalled();
+    expect(upsertSalaryRateMock).not.toHaveBeenCalled();
   });
 
   it("answers with a generic message when the database fails", async () => {
-    upsertSalarySettingMock.mockRejectedValue(new Error("connection lost"));
+    upsertSalaryRateMock.mockRejectedValue(new Error("connection lost"));
 
     const result = await saveSalarySettingAction({
+      month: "2026-10",
       hourlyRate: "20",
       hoursPerDay: "7",
       currency: "EUR",
@@ -796,6 +849,7 @@ describe("cycleWorkDayAction", () => {
   beforeEach(() => {
     requireUserMock.mockReset().mockResolvedValue(OWNER);
     findSalarySettingMock.mockReset().mockResolvedValue(SALARY_SETTING);
+    listSalaryRatesMock.mockReset().mockResolvedValue(SALARY_RATES);
     findWorkDayMock.mockReset().mockResolvedValue(null);
     createWorkDayMock.mockReset().mockResolvedValue({ id: "work-day-1" });
     updateWorkDayMock.mockReset().mockResolvedValue(true);
@@ -861,6 +915,16 @@ describe("cycleWorkDayAction", () => {
     expect(createWorkDayMock).not.toHaveBeenCalled();
     expect(updateWorkDayMock).not.toHaveBeenCalled();
     expect(deleteWorkDayMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses to plan a day whose month has no rate at all", async () => {
+    listSalaryRatesMock.mockResolvedValue([]);
+
+    const result = await cycleWorkDayAction({ date: "2026-10-05" });
+
+    expect(result.status).toBe("invalid");
+    expect(result.status === "invalid" && result.message).toMatch(/Aucun taux horaire/);
+    expect(createWorkDayMock).not.toHaveBeenCalled();
   });
 
   it("rejects an impossible date before reading anything", async () => {
@@ -998,6 +1062,7 @@ describe("bookSalaryAction", () => {
   beforeEach(() => {
     requireUserMock.mockReset().mockResolvedValue(OWNER);
     findSalarySettingMock.mockReset().mockResolvedValue(SALARY_SETTING);
+    listSalaryRatesMock.mockReset().mockResolvedValue(SALARY_RATES);
     findAccountMock.mockReset().mockResolvedValue(EUR_ACCOUNT);
     findTransactionByExternalRefMock.mockReset().mockResolvedValue(null);
     listWorkDaysMock.mockReset().mockResolvedValue([
@@ -1101,6 +1166,16 @@ describe("bookSalaryAction", () => {
 
     expect(result.status).toBe("invalid");
     expect(result.status === "invalid" && result.message).toMatch(/taux horaire/);
+    expect(createTransactionMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses to book a month that has no rate at all", async () => {
+    listSalaryRatesMock.mockResolvedValue([]);
+
+    const result = await bookSalaryAction(BOOKING);
+
+    expect(result.status).toBe("invalid");
+    expect(result.status === "invalid" && result.message).toMatch(/Aucun taux horaire/);
     expect(createTransactionMock).not.toHaveBeenCalled();
   });
 

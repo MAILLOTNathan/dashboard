@@ -10,6 +10,7 @@ import { formatMoney, toDecimalString } from "@/lib/money";
 import {
   computeSalarySummary,
   monthCalendarCells,
+  resolveSalaryRate,
   SALARY_CATEGORY_NAME,
   salaryBookingRef,
   salaryEquivalents,
@@ -18,6 +19,7 @@ import {
   findSalarySetting,
   findTransactionByExternalRef,
   listAccounts,
+  listSalaryRates,
   listWorkDays,
 } from "@/modules/budget/repository";
 import { RecordedSalaryNotice } from "./salary-booking-recorded";
@@ -52,33 +54,78 @@ export async function SalarySection({
 }) {
   const { year, month } = parseMonthKey(monthKey);
   const range = monthRange(year, month);
+  const monthLabel = formatMonthLabel(year, month);
 
-  const [setting, workDays, accounts, booking] = await Promise.all([
+  const [setting, rates, workDays, accounts, booking] = await Promise.all([
     findSalarySetting(userId),
+    listSalaryRates(userId),
     listWorkDays(userId, { from: range.start, to: range.end }),
     listAccounts(userId),
     findTransactionByExternalRef(userId, salaryBookingRef(year, month)),
   ]);
 
-  if (!setting) {
+  const rate = resolveSalaryRate(rates, year, month);
+
+  // The month picker belongs to this tab because both the calendar and the monthly rate
+  // are consulted month by month.
+  const monthPicker = (
+    <form method="get" action="/budget" className="mb-4 flex flex-wrap items-end gap-2">
+      <input type="hidden" name="tab" value="salary" />
+
+      <label className="flex flex-col gap-1 text-sm">
+        <span className="font-medium">Mois affiché</span>
+        <input
+          type="month"
+          name="month"
+          defaultValue={monthKey}
+          className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-900"
+        />
+      </label>
+
+      <button
+        type="submit"
+        className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white dark:bg-zinc-100 dark:text-zinc-900"
+      >
+        Afficher
+      </button>
+    </form>
+  );
+
+  if (!setting || !rate) {
     return (
       <Card
-        title="Salaire"
-        description="Le simulateur transforme des heures cliquées sur un calendrier en montants, à partir d'un taux horaire. La recette du mois s'enregistre ensuite en un clic, dans la catégorie « Salaire » : rien n'est écrit avant ce clic."
+        title={`Salaire — ${monthLabel}`}
+        description="Le simulateur transforme des heures cliquées sur un calendrier en montants, à partir d'un taux horaire mensuel : un taux s'applique à partir du mois saisi, jusqu'au prochain changement. La recette du mois s'enregistre ensuite en un clic, dans la catégorie « Salaire » : rien n'est écrit avant ce clic."
       >
+        {monthPicker}
+
         <div className="flex flex-col gap-3">
           <Notice tone="info">
-            Définissez d&apos;abord le taux horaire : le calendrier s&apos;active ensuite.
+            {setting
+              ? `Aucun taux horaire pour ${monthLabel} ni avant : saisissez le taux de ce mois pour activer la simulation — il s'appliquera à partir de ${monthLabel}, jusqu'au prochain taux saisi.`
+              : `Définissez d'abord le taux horaire de ${monthLabel} : le calendrier s'active ensuite.`}
           </Notice>
-          <SalaryForm />
+          <SalaryForm
+            monthKey={monthKey}
+            monthLabel={monthLabel}
+            editing={
+              setting
+                ? {
+                    hourlyRate: "",
+                    hoursPerDay: toDecimalString(setting.hoursPerDay),
+                    currency: setting.currency,
+                  }
+                : null
+            }
+          />
         </div>
       </Card>
     );
   }
 
   const currency = setting.currency;
-  const summary = computeSalarySummary(workDays, setting.hourlyRate);
-  const equivalents = salaryEquivalents(setting.hourlyRate, setting.hoursPerDay);
+  const summary = computeSalarySummary(workDays, rate.hourlyRate);
+  const equivalents = salaryEquivalents(rate.hourlyRate, setting.hoursPerDay);
   const days: WorkCalendarDay[] = workDays.map((day) => ({
     date: toDateOnlyString(day.date),
     status: day.status,
@@ -94,37 +141,18 @@ export async function SalarySection({
 
   return (
     <Card
-      title={`Salaire — ${formatMonthLabel(year, month)}`}
+      title={`Salaire — ${monthLabel}`}
       description={`Simulation à partir d'un taux horaire de ${formatMoney({
-        amount: setting.hourlyRate,
+        amount: rate.hourlyRate,
         currency,
-      })}. Un jour cliqué est d'abord prévu (budget simulé), puis confirmé travaillé quand il a réellement lieu. Le simulateur n'écrit rien tout seul : la recette du mois s'enregistre en un clic, une seule fois.`}
+      })} — en vigueur depuis ${formatMonthLabel(rate.year, rate.month)}. Un jour cliqué est d'abord prévu (budget simulé), puis confirmé travaillé quand il a réellement lieu. Le simulateur n'écrit rien tout seul : la recette du mois s'enregistre en un clic, une seule fois.`}
     >
-      <form method="get" action="/budget" className="mb-4 flex flex-wrap items-end gap-2">
-        <input type="hidden" name="tab" value="salary" />
-
-        <label className="flex flex-col gap-1 text-sm">
-          <span className="font-medium">Mois affiché</span>
-          <input
-            type="month"
-            name="month"
-            defaultValue={monthKey}
-            className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-900"
-          />
-        </label>
-
-        <button
-          type="submit"
-          className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white dark:bg-zinc-100 dark:text-zinc-900"
-        >
-          Afficher
-        </button>
-      </form>
+      {monthPicker}
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           label={`Taux horaire (${currency})`}
-          value={formatMoney({ amount: setting.hourlyRate, currency })}
+          value={formatMoney({ amount: rate.hourlyRate, currency })}
           hint={`Équivalents indicatifs : ${formatMoney({
             amount: equivalents.daily,
             currency,
@@ -213,12 +241,15 @@ export async function SalarySection({
 
       <details className="mt-4">
         <summary className="cursor-pointer text-sm font-medium">
-          Modifier le taux horaire
+          Modifier le taux horaire — {formatMoney({ amount: rate.hourlyRate, currency })}{" "}
+          en vigueur depuis {formatMonthLabel(rate.year, rate.month)}
         </summary>
         <div className="pt-3">
           <SalaryForm
+            monthKey={monthKey}
+            monthLabel={monthLabel}
             editing={{
-              hourlyRate: toDecimalString(setting.hourlyRate),
+              hourlyRate: toDecimalString(rate.hourlyRate),
               hoursPerDay: toDecimalString(setting.hoursPerDay),
               currency: setting.currency,
             }}

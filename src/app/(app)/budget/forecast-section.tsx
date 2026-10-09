@@ -1,3 +1,4 @@
+import Decimal from "decimal.js";
 import Link from "next/link";
 import {
   Badge,
@@ -9,7 +10,7 @@ import {
   thClass,
 } from "@/components/ui";
 import { formatDateOnly, formatInstant, formatMonthLabel, monthKeysFrom, monthRange, parseMonthKey, shiftMonthKey, toDateOnlyString } from "@/lib/dates";
-import { DEFAULT_CURRENCY, formatMoney } from "@/lib/money";
+import { DEFAULT_CURRENCY, formatMoney, type Currency } from "@/lib/money";
 import {
   ensureRecurringOccurrences,
   findRecurringEntry,
@@ -19,8 +20,12 @@ import {
   listCategories,
   listRecurringEntries,
   listRecurringOccurrences,
+  listSalaryRates,
+  listTransactionsForSeries,
   listWorkDays,
+  sumTransactionsByCurrency,
 } from "@/modules/budget/repository";
+import { buildSimulatedBalances } from "@/modules/budget/projection";
 import {
   OCCURRENCE_STATUS_LABELS,
   plannedContributions,
@@ -32,7 +37,14 @@ import {
   type ForecastType,
   type RecurringOccurrenceStatus,
 } from "@/modules/budget/recurrence";
-import { computeSalarySummary, SALARY_CATEGORY_NAME, salaryBookingRef } from "@/modules/budget/salary";
+import {
+  computeSalarySummary,
+  resolveSalaryRate,
+  SALARY_CATEGORY_NAME,
+  salaryBookingRef,
+  salaryMonthContribution,
+  type WorkDayRecord,
+} from "@/modules/budget/salary";
 import { DeleteRecurringButton } from "./delete-recurring-button";
 import { OccurrenceActions } from "./occurrence-actions";
 import { RecurringEntryForm } from "./recurring-entry-form";
@@ -82,19 +94,60 @@ export async function ForecastSection({
 
   await ensureRecurringOccurrences(userId, year, month);
 
-  const [entries, occurrences, accounts, categories, salarySetting, workDays, salaryBooking, editTarget] =
-    await Promise.all([
-      listRecurringEntries(userId),
-      listRecurringOccurrences(userId, { from: range.start, to: range.end }),
-      listAccounts(userId),
-      listCategories(userId),
-      findSalarySetting(userId),
-      // The month's calendar, read exactly like the Salaire tab reads it: the prévision
-      // and the booking recompute the same figures from the same rows.
-      listWorkDays(userId, { from: range.start, to: range.end }),
-      findTransactionByExternalRef(userId, salaryBookingRef(year, month)),
-      editRecurringId ? findRecurringEntry(userId, editRecurringId) : Promise.resolve(null),
-    ]);
+  // The scheduler reads the six months after the displayed one: their whole calendar and
+  // their salary bookings are fetched once here, so the rows and the monthly prévision
+  // below can never disagree about what is planned.
+  const upcomingKeys = monthKeysFrom(shiftMonthKey(monthKey, 1), 6);
+  const firstUpcoming = parseMonthKey(upcomingKeys[0]);
+  const lastUpcoming = parseMonthKey(upcomingKeys[upcomingKeys.length - 1]);
+  const upcomingRange = {
+    from: monthRange(firstUpcoming.year, firstUpcoming.month).start,
+    to: monthRange(lastUpcoming.year, lastUpcoming.month).end,
+  };
+
+  const [
+    entries,
+    occurrences,
+    accounts,
+    categories,
+    salarySetting,
+    rates,
+    workDays,
+    salaryBooking,
+    upcomingWorkDays,
+    upcomingBookings,
+    recordedBefore,
+    upcomingRecorded,
+    editTarget,
+  ] = await Promise.all([
+    listRecurringEntries(userId),
+    listRecurringOccurrences(userId, { from: range.start, to: range.end }),
+    listAccounts(userId),
+    listCategories(userId),
+    findSalarySetting(userId),
+    listSalaryRates(userId),
+    // The month's calendar, read exactly like the Salaire tab reads it: the prévision
+    // and the booking recompute the same figures from the same rows.
+    listWorkDays(userId, { from: range.start, to: range.end }),
+    findTransactionByExternalRef(userId, salaryBookingRef(year, month)),
+    // The scheduler's salary: one read for the window's calendar, one booking lookup per
+    // month (indexed through the stable `salary:YYYY-MM` reference).
+    listWorkDays(userId, upcomingRange),
+    Promise.all(
+      upcomingKeys.map((key) => {
+        const parsed = parseMonthKey(key);
+        return findTransactionByExternalRef(
+          userId,
+          salaryBookingRef(parsed.year, parsed.month),
+        );
+      }),
+    ),
+    // The simulated balance starts from the recorded cumulative strictly before the
+    // window, then walks the window's recorded operations month by month.
+    sumTransactionsByCurrency(userId, { before: upcomingRange.from }),
+    listTransactionsForSeries(userId, { from: upcomingRange.from, to: upcomingRange.to }),
+    editRecurringId ? findRecurringEntry(userId, editRecurringId) : Promise.resolve(null),
+  ]);
 
   const entryEditing = editTarget;
   const entryEditTargetIsHidden = Boolean(editRecurringId) && editTarget === null;
@@ -106,9 +159,10 @@ export async function ForecastSection({
 
   // Salary prévision: computed from the simulator, never stored — it follows the
   // calendar and becomes the first row of the month's échéances while it is not
-  // registered yet.
-  const salarySummary = salarySetting
-    ? computeSalarySummary(workDays, salarySetting.hourlyRate)
+  // registered yet. The rate is the one in force for the displayed month.
+  const displayedRate = resolveSalaryRate(rates, year, month);
+  const salarySummary = displayedRate
+    ? computeSalarySummary(workDays, displayedRate.hourlyRate)
     : null;
   const salaryAccounts = salarySetting
     ? accounts.filter((account) => account.currency === salarySetting.currency)
@@ -116,7 +170,10 @@ export async function ForecastSection({
   const workedDayCount = workDays.filter((day) => day.status === "WORKED").length;
   const lastClickedDay = workDays.length > 0 ? workDays[workDays.length - 1] : null;
   const salaryPending =
-    salarySetting !== null && salaryBooking === null && lastClickedDay !== null;
+    salarySetting !== null &&
+    displayedRate !== null &&
+    salaryBooking === null &&
+    lastClickedDay !== null;
 
   // The month's prévisionnel: every expected movement, whatever its source — the series
   // échéances and the salary prévision. Confirmed ones count (a prévision that came
@@ -136,41 +193,113 @@ export async function ForecastSection({
     });
   }
 
-  if (salarySetting) {
-    if (salaryBooking) {
-      // Registered: the amount that will really land, not a fresh simulation.
-      contributions.push({
-        currency: salaryBooking.currency,
-        type: "INCOME",
-        amount: salaryBooking.amount,
-        status: "CONFIRMED",
-      });
-    } else if (salarySummary && lastClickedDay) {
-      contributions.push({
-        currency: salarySetting.currency,
-        type: "INCOME",
-        amount: salarySummary.totalAmount,
-        status: "PENDING",
-      });
-    }
+  // One salary rule for the displayed month and the scheduler alike: a registered month
+  // counts the amount that will really land, a month of clicked days its simulation, an
+  // untouched calendar nothing at all.
+  const salaryContribution = salaryMonthContribution({
+    rate:
+      salarySetting && displayedRate
+        ? { hourlyRate: displayedRate.hourlyRate, currency: salarySetting.currency }
+        : null,
+    days: workDays,
+    booking: salaryBooking,
+  });
+
+  if (salaryContribution) {
+    contributions.push(salaryContribution);
   }
 
   const forecastTotals = summariseForecastMonth(contributions);
 
   // The scheduler looks at the months **after** the displayed one: six months of planned
-  // occurrences, computed from the series (nothing is materialised ahead of time). The
-  // salary is absent by design — its amount follows a calendar that does not exist yet.
-  const upcomingMonths = monthKeysFrom(shiftMonthKey(monthKey, 1), 6).map((key) => {
+  // occurrences, computed from the series (nothing is materialised ahead of time), each
+  // completed with its salary — the simulation of its clicked days, or the amount already
+  // booked. A month nobody clicked carries no salary: an empty calendar is not a zero.
+  const upcomingWorkDaysByMonth = new Map<string, WorkDayRecord[]>();
+
+  for (const day of upcomingWorkDays) {
+    const key = toDateOnlyString(day.date).slice(0, 7);
+    const bucket = upcomingWorkDaysByMonth.get(key);
+
+    if (bucket) {
+      bucket.push(day);
+    } else {
+      upcomingWorkDaysByMonth.set(key, [day]);
+    }
+  }
+
+  // Recorded operations inside the window, bucketed per month and currency: they already
+  // exist, so the simulated balance advances with them — never projected a second time.
+  const recordedByMonth = new Map<string, Map<Currency, Decimal>>();
+
+  for (const transaction of upcomingRecorded.transactions) {
+    const key = toDateOnlyString(transaction.operationDate).slice(0, 7);
+    const byCurrency = recordedByMonth.get(key) ?? new Map<Currency, Decimal>();
+
+    byCurrency.set(
+      transaction.currency,
+      (byCurrency.get(transaction.currency) ?? new Decimal(0)).plus(transaction.amount),
+    );
+    recordedByMonth.set(key, byCurrency);
+  }
+
+  const monthPlans = upcomingKeys.map((key, index) => {
     const parsed = parseMonthKey(key);
+    const monthRate = resolveSalaryRate(rates, parsed.year, parsed.month);
+    const salary = salaryMonthContribution({
+      rate:
+        salarySetting && monthRate
+          ? { hourlyRate: monthRate.hourlyRate, currency: salarySetting.currency }
+          : null,
+      days: upcomingWorkDaysByMonth.get(key) ?? [],
+      booking: upcomingBookings[index],
+    });
+    const monthContributions = plannedContributions(
+      entries,
+      parsed.year,
+      parsed.month,
+      currencyByAccount,
+    );
+
+    if (salary) {
+      monthContributions.push(salary);
+    }
+
+    // Only the not-yet-recorded movements advance the simulated balance: a confirmed one
+    // (a booked salary) is already a recorded operation of its month.
+    const pendingNet = new Map<Currency, Decimal>();
+    for (const totals of summariseForecastMonth(
+      monthContributions.filter((contribution) => contribution.status === "PENDING"),
+    )) {
+      pendingNet.set(totals.currency, totals.net);
+    }
 
     return {
       key,
       label: formatMonthLabel(parsed.year, parsed.month),
-      totals: summariseForecastMonth(
-        plannedContributions(entries, parsed.year, parsed.month, currencyByAccount),
-      ),
+      totals: summariseForecastMonth(monthContributions),
+      salary,
+      recorded: recordedByMonth.get(key) ?? new Map<Currency, Decimal>(),
+      pendingNet,
     };
   });
+
+  // The simulated balance: the currency's recorded cumulative before the window, advanced
+  // month by month. A truncated window read would make the monthly sums partial, so the
+  // column is left out rather than shown wrong.
+  const simulatedBalances = upcomingRecorded.truncated
+    ? null
+    : buildSimulatedBalances({
+        recordedBefore,
+        months: monthPlans.map((plan) => ({
+          key: plan.key,
+          recorded: plan.recorded,
+          pending: plan.pendingNet,
+        })),
+      });
+  const balancesByMonth = new Map(
+    (simulatedBalances ?? []).map((entry) => [entry.key, entry.balances]),
+  );
 
   // "Today" is the UTC calendar day, like every date-only value in the project: marking
   // an occurrence late cannot shift because of a display time zone.
@@ -608,13 +737,15 @@ export async function ForecastSection({
 
       <Card
         title="Échéancier des 6 prochains mois"
-        description="Les échéances à venir des séries, calculées à partir du calendrier — rien n'est matérialisé d'avance, et seules les séries qui couvrent le mois apparaissent. Le salaire simulé n'y figure pas : il dépend d'un calendrier qui n'existe pas encore. Aucune devise n'est convertie."
+        description="Échéances à venir des séries, calculées depuis le calendrier, salaire compris : la simulation des jours cliqués dans Salaire (« simulé »), ou le montant déjà enregistré (« enregistré »). Rien n'est matérialisé d'avance, un mois sans jour cliqué n'affiche aucun salaire — jamais un zéro — et aucune devise n'est convertie."
       >
-        {entries.length === 0 ? (
+        {entries.length === 0 && monthPlans.every((plan) => plan.salary === null) ? (
           <Notice tone="info">
-            Aucune série : l&apos;échéancier se remplira dès la première série définie.
+            Aucune série et aucun jour de salaire cliqué : l&apos;échéancier se remplira dès
+            la première série définie, ou dès que des jours seront planifiés dans Salaire.
           </Notice>
         ) : (
+          <>
           <TableShell caption="Échéancier des 6 prochains mois">
             <thead>
               <tr>
@@ -628,10 +759,16 @@ export async function ForecastSection({
                   Recettes prévues
                 </th>
                 <th scope="col" className={`${thClass} text-right`}>
+                  Dont salaire
+                </th>
+                <th scope="col" className={`${thClass} text-right`}>
                   Dépenses prévues
                 </th>
                 <th scope="col" className={`${thClass} text-right`}>
                   Solde
+                </th>
+                <th scope="col" className={`${thClass} text-right`}>
+                  Solde simulé
                 </th>
                 <th scope="col" className={`${thClass} text-right`}>
                   Échéances
@@ -639,21 +776,42 @@ export async function ForecastSection({
               </tr>
             </thead>
             <tbody>
-              {upcomingMonths.map((upcoming) =>
+              {monthPlans.map((upcoming) =>
                 upcoming.totals.length === 0 ? (
                   <tr key={upcoming.key}>
                     <td className={tdClass}>{upcoming.label}</td>
-                    <td className={`${tdClass} text-zinc-500 dark:text-zinc-400`} colSpan={5}>
+                    <td className={`${tdClass} text-zinc-500 dark:text-zinc-400`} colSpan={7}>
                       Aucune échéance prévue
                     </td>
                   </tr>
                 ) : (
-                  upcoming.totals.map((totals) => (
+                  upcoming.totals.map((totals) => {
+                    const balance =
+                      balancesByMonth.get(upcoming.key)?.get(totals.currency) ?? null;
+
+                    return (
                     <tr key={`${upcoming.key}|${totals.currency}`}>
                       <td className={tdClass}>{upcoming.label}</td>
                       <td className={tdClass}>{totals.currency}</td>
                       <td className={`${tdClass} whitespace-nowrap text-right tabular-nums`}>
                         {formatMoney({ amount: totals.income, currency: totals.currency })}
+                      </td>
+                      <td className={`${tdClass} whitespace-nowrap text-right tabular-nums`}>
+                        {upcoming.salary !== null && upcoming.salary.currency === totals.currency ? (
+                          <>
+                            {formatMoney({
+                              amount: upcoming.salary.amount,
+                              currency: upcoming.salary.currency,
+                            })}
+                            <span className="block text-xs text-zinc-500 dark:text-zinc-400">
+                              {upcoming.salary.status === "CONFIRMED"
+                                ? "enregistré"
+                                : "simulé"}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-zinc-500 dark:text-zinc-400">—</span>
+                        )}
                       </td>
                       <td className={`${tdClass} whitespace-nowrap text-right tabular-nums`}>
                         {formatMoney({ amount: totals.expenses, currency: totals.currency })}
@@ -665,13 +823,36 @@ export async function ForecastSection({
                       >
                         {formatMoney({ amount: totals.net, currency: totals.currency })}
                       </td>
+                      <td className={`${tdClass} whitespace-nowrap text-right tabular-nums`}>
+                        {balance !== null ? (
+                          formatMoney({ amount: balance, currency: totals.currency })
+                        ) : (
+                          <span className="text-zinc-500 dark:text-zinc-400">—</span>
+                        )}
+                      </td>
                       <td className={`${tdClass} text-right tabular-nums`}>{totals.count}</td>
                     </tr>
-                  ))
+                    );
+                  })
                 ),
               )}
             </tbody>
           </TableShell>
+
+            <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+              Solde simulé : cumul enregistré de la devise avant la période, avancé mois
+              par mois par les opérations déjà saisies et les mouvements prévus (échéances
+              en attente, salaire simulé) — chaque mouvement ne compte qu&apos;une fois.
+              « — » : aucune opération enregistrée dans cette devise, un solde inconnu
+              n&apos;est pas un zéro.
+            </p>
+            {simulatedBalances === null ? (
+              <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                Lecture de la période tronquée (trop d&apos;opérations) : le solde simulé
+                n&apos;est pas calculé, plutôt que calculé à moitié.
+              </p>
+            ) : null}
+          </>
         )}
       </Card>
     </>
