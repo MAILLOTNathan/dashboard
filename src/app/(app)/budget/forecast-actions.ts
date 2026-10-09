@@ -16,18 +16,22 @@ import {
   decisionBlockedReason,
   forecastOccurrenceRef,
   recurringEntryInputSchema,
+  recurringEntryUpdateSchema,
   signedForecastAmount,
+  startDateChangeRefusedReason,
 } from "@/modules/budget/recurrence";
 import {
   countDecidedOccurrences,
   createRecurringEntry,
   createTransaction,
   decideRecurringOccurrence,
+  deletePendingOccurrences,
   deleteRecurringEntry,
   findAccount,
   findCategory,
   findRecurringEntry,
   findRecurringOccurrence,
+  updateRecurringEntry,
 } from "@/modules/budget/repository";
 import { resolveTransactionInput } from "@/modules/budget/transactions";
 
@@ -92,6 +96,89 @@ export async function createRecurringEntryAction(values: unknown): Promise<Actio
     });
   } catch (error) {
     return unexpectedResult("createRecurringEntry", error);
+  }
+
+  revalidatePath("/budget");
+  return { status: "ok" };
+}
+
+/**
+ * Edits one recurring definition — label, amount, account, category, cadence, dates.
+ *
+ * Two deliberate rules: the start date can no longer move once an occurrence has been
+ * decided (the series' history is dated, and a confirmation holds a transaction); when
+ * the cadence or the start date does move, the still-pending occurrences are deleted so
+ * the month opening re-materialises them on the new rule, instead of leaving échéances
+ * computed under a rule that no longer exists.
+ */
+export async function updateRecurringEntryAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = recurringEntryUpdateSchema.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  const input = parsed.data;
+
+  try {
+    const entry = await findRecurringEntry(user.id, input.id);
+    if (!entry) {
+      return rejectedResult("id", "Série introuvable : elle a peut-être été supprimée entre-temps.");
+    }
+
+    const account = await findAccount(user.id, input.accountId);
+    if (!account) {
+      return rejectedResult("accountId", "Compte introuvable.");
+    }
+
+    const category: CategorySummary | null = input.categoryId
+      ? await findCategory(user.id, input.categoryId)
+      : null;
+
+    if (input.categoryId && !category) {
+      return rejectedResult("categoryId", "Catégorie introuvable.");
+    }
+
+    const categoryMismatch = categoryMismatchReason(input.type, category);
+    if (categoryMismatch) {
+      return rejectedResult("categoryId", categoryMismatch);
+    }
+
+    const startDateMoved = input.startDate.getTime() !== entry.startDate.getTime();
+    const cadenceMoved = startDateMoved || input.frequency !== entry.frequency;
+
+    if (startDateMoved) {
+      const decided = await countDecidedOccurrences(user.id, entry.id);
+      const refused = startDateChangeRefusedReason(decided);
+
+      if (refused) {
+        return rejectedResult("startDate", refused);
+      }
+    }
+
+    const updated = await updateRecurringEntry(user.id, entry.id, {
+      accountId: account.id,
+      categoryId: input.categoryId,
+      type: input.type,
+      label: input.label,
+      amount: input.amount,
+      frequency: input.frequency,
+      startDate: input.startDate,
+      endDate: input.endDate,
+    });
+
+    if (!updated) {
+      return rejectedResult("id", "Série introuvable : elle a peut-être été supprimée entre-temps.");
+    }
+
+    if (cadenceMoved) {
+      // The pending rows were computed on the old rule; the next month opening rebuilds
+      // the matching ones. Decided occurrences are history and stay untouched.
+      await deletePendingOccurrences(user.id, entry.id);
+    }
+  } catch (error) {
+    return unexpectedResult("updateRecurringEntry", error);
   }
 
   revalidatePath("/budget");

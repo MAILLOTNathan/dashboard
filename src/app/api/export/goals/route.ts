@@ -6,7 +6,7 @@ import {
   GOAL_STATUSES,
   type GoalProgress,
 } from "@/modules/budget/goals";
-import { listGoals, readAccountBalance } from "@/modules/budget/repository";
+import { listGoals, readAccountBalance, sumGoalContributions } from "@/modules/budget/repository";
 
 /**
  * CSV export of the financial goals, with the same progress rules as the screen.
@@ -92,9 +92,10 @@ export async function GET(request: Request): Promise<Response> {
   );
 
   // A linked goal reads the recorded balance of its account; an account with nothing
-  // recorded yields `null` (unknown), which the progress turns into empty cells.
-  const balances = new Map(
-    await Promise.all(
+  // recorded yields `null` (unknown), which the progress turns into empty cells. Manual
+  // goals read their contribution log, so the file matches the screen exactly.
+  const [balances, contributionSums] = await Promise.all([
+    Promise.all(
       goals
         .filter((goal) => goal.accountId !== null)
         .map(async (goal) => {
@@ -105,12 +106,15 @@ export async function GET(request: Request): Promise<Response> {
           return [goal.accountId as string, transactionCount === 0 ? null : balance] as const;
         }),
     ),
-  );
+    sumGoalContributions(user.id),
+  ]);
+  const balanceByAccount = new Map(balances);
 
   const rows: GoalRow[] = goals.map((goal) => {
     const progress = computeGoalProgress(
       goal,
-      goal.accountId === null ? null : (balances.get(goal.accountId) ?? null),
+      goal.accountId === null ? null : (balanceByAccount.get(goal.accountId) ?? null),
+      { contributionSum: contributionSums.get(goal.id)?.total ?? null },
     );
 
     return {

@@ -1,17 +1,21 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
+import Link from "next/link";
 import { useEffect } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { FormFeedback, SubmitButton, useRecordedAction } from "@/components/forms";
 import { Field, inputClass } from "@/components/ui";
 import type { AccountSummary, CategorySummary } from "@/modules/budget/domain";
 import {
+  RECURRENCE_FREQUENCIES,
+  RECURRENCE_FREQUENCY_LABELS,
   recurringEntryInputSchema,
   type ForecastType,
+  type RecurringEntryFormInitialValues,
   type RecurringEntryInput,
 } from "@/modules/budget/recurrence";
-import { createRecurringEntryAction } from "./forecast-actions";
+import { createRecurringEntryAction, updateRecurringEntryAction } from "./forecast-actions";
 
 const TYPE_LABELS: Record<ForecastType, string> = {
   INCOME: "Recette attendue",
@@ -19,38 +23,59 @@ const TYPE_LABELS: Record<ForecastType, string> = {
 };
 
 /**
- * Creates a recurring series.
+ * Creates a recurring series, or corrects one.
  *
  * The amount is asked positive, like a budget: it describes what is expected, and the
  * nature gives the direction — the sign only appears on the day an occurrence is
  * confirmed into the ledger. The category list follows the nature, and the currency is
  * never asked: an occurrence takes the currency of its account at confirmation time.
+ *
+ * The cadence is monthly, quarterly or yearly, counted from the start date's month. When
+ * an edition moves the cadence or the start date, the still-pending occurrences are
+ * rebuilt; the server refuses a start-date move once a decision exists, and reports why.
  */
 export function RecurringEntryForm({
   accounts,
   categories,
   defaultStartDate,
+  editing = null,
+  cancelHref,
 }: {
   accounts: AccountSummary[];
   categories: CategorySummary[];
   /** `YYYY-MM-DD`: first day of the month displayed by the page. */
   defaultStartDate: string;
+  /**
+   * The series being corrected, already reduced to plain strings by the server: a
+   * `Decimal` or a `Date` cannot cross into this component at all.
+   */
+  editing?: RecurringEntryFormInitialValues | null;
+  /** Where "Annuler" returns to, month preserved. Used while editing. */
+  cancelHref?: string;
 }) {
+  const isEditing = editing !== null;
+
   const form = useForm<RecurringEntryInput>({
     resolver: zodResolver(recurringEntryInputSchema, undefined, { raw: true }),
     defaultValues: {
-      label: "",
-      type: "EXPENSE",
-      amount: "",
-      accountId: accounts[0]?.id ?? "",
-      categoryId: "",
-      frequency: "MONTHLY",
-      startDate: defaultStartDate,
-      endDate: "",
+      label: editing?.label ?? "",
+      type: editing?.type ?? "EXPENSE",
+      amount: editing?.amount ?? "",
+      accountId: editing?.accountId ?? accounts[0]?.id ?? "",
+      categoryId: editing?.categoryId ?? "",
+      frequency: editing?.frequency ?? "MONTHLY",
+      startDate: editing?.startDate ?? defaultStartDate,
+      endDate: editing?.endDate ?? "",
     },
   });
 
-  const { result, submit } = useRecordedAction(form, createRecurringEntryAction);
+  const { result, submit } = useRecordedAction(
+    form,
+    (values) =>
+      editing
+        ? updateRecurringEntryAction({ ...values, id: editing.id })
+        : createRecurringEntryAction(values),
+  );
   const { errors, isSubmitting } = form.formState;
 
   const type = useWatch({ control: form.control, name: "type" });
@@ -114,10 +139,14 @@ export function RecurringEntryForm({
         label="Fréquence"
         htmlFor="recurring-frequency"
         error={errors.frequency?.message}
-        hint="Une échéance par mois, au jour de la date de début."
+        hint="Comptée depuis le mois de la date de début : trimestrielle = tous les 3 mois, annuelle = une fois par an."
       >
         <select id="recurring-frequency" className={inputClass} {...form.register("frequency")}>
-          <option value="MONTHLY">Mensuelle</option>
+          {RECURRENCE_FREQUENCIES.map((frequency) => (
+            <option key={frequency} value={frequency}>
+              {RECURRENCE_FREQUENCY_LABELS[frequency]}
+            </option>
+          ))}
         </select>
       </Field>
 
@@ -152,7 +181,7 @@ export function RecurringEntryForm({
         label="Début"
         htmlFor="recurring-start"
         error={errors.startDate?.message}
-        hint="La série se répète chaque mois à ce jour-là ; sur un mois plus court, elle tombe le dernier jour (31 janvier → 28 février)."
+        hint="La série se répète à ce jour de l'intervalle ; sur un mois plus court, elle tombe le dernier jour (31 janvier → 28 février)."
       >
         <input
           id="recurring-start"
@@ -176,12 +205,26 @@ export function RecurringEntryForm({
         />
       </Field>
 
-      <div className="sm:col-span-2 lg:col-span-4">
-        <SubmitButton label="Ajouter la série" pending={isSubmitting} />
+      <div className="flex flex-wrap items-center gap-2 sm:col-span-2 lg:col-span-4">
+        <SubmitButton
+          label={isEditing ? "Enregistrer les modifications" : "Ajouter la série"}
+          pending={isSubmitting}
+        />
+        {isEditing && cancelHref ? (
+          <Link
+            href={cancelHref}
+            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            Annuler
+          </Link>
+        ) : null}
       </div>
 
       <div className="sm:col-span-2 lg:col-span-4">
-        <FormFeedback result={result} successMessage="Série enregistrée." />
+        <FormFeedback
+          result={result}
+          successMessage={isEditing ? "Série modifiée." : "Série enregistrée."}
+        />
       </div>
     </form>
   );

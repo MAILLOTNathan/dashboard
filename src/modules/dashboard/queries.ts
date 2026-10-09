@@ -5,6 +5,7 @@ import {
   monthRange,
   parseMonthKey,
 } from "@/lib/dates";
+import { DEFAULT_CURRENCY } from "@/lib/money";
 import { describeAlert, type AlertKind, type AlertTone } from "@/modules/alerts/domain";
 import { listAlerts } from "@/modules/alerts/repository";
 import { buildBudgetReport, summariseBudgetReport, type BudgetReportTotal } from "@/modules/budget/report";
@@ -14,8 +15,9 @@ import {
   listBudgets,
   listTransactions,
   listTransactionsForSeries,
+  sumTransactionsByCurrency,
 } from "@/modules/budget/repository";
-import { computeCumulativeTotal, computeTotalsByCurrency, type MonthlyTotals } from "@/modules/budget/totals";
+import { computeTotalsByCurrency, type MonthlyTotals } from "@/modules/budget/totals";
 import {
   describeConnectionState,
   isSyncStale,
@@ -102,6 +104,7 @@ export async function getDashboardOverview(
     monthBudgets,
     monthSeries,
     alerts,
+    cumulativeByCurrency,
   ] = await Promise.all([
     listTransactions(userId, { from: range.start, to: range.end }),
     countTransactions(userId),
@@ -115,9 +118,10 @@ export async function getDashboardOverview(
     // The stored episodes: the page runs the evaluation pass before this read, so the
     // banner shows what the engine just found, not what it found last time.
     listAlerts(userId),
+    // The all-time signed total, aggregated in the database: reading rows to add them up
+    // would stop at the page bound and call a truncated sum "the balance".
+    sumTransactionsByCurrency(userId),
   ]);
-
-  const allTransactions = await listTransactions(userId);
 
   const budgetTotals = summariseBudgetReport(
     buildBudgetReport(monthBudgets, monthSeries.transactions),
@@ -131,7 +135,8 @@ export async function getDashboardOverview(
       transactionCount,
       monthTransactionCount: monthTransactions.length,
       monthTotals: computeTotalsByCurrency(monthTransactions),
-      totalCumulative: computeCumulativeTotal(allTransactions, { currency: "EUR" }),
+      totalCumulative:
+        cumulativeByCurrency.get(DEFAULT_CURRENCY) ?? new Decimal(0),
     },
     budgetTracking: {
       totals: budgetTotals,

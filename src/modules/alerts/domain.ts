@@ -36,6 +36,7 @@ import {
 export const ALERT_KINDS = [
   "LOW_BALANCE",
   "BUDGET_OVERRUN",
+  "BUDGET_THRESHOLD",
   "UNUSUAL_EXPENSE",
   "STALE_INTEGRATION",
   "OVERDUE_EVENT",
@@ -45,6 +46,7 @@ export type AlertKind = (typeof ALERT_KINDS)[number];
 export const ALERT_KIND_LABELS: Record<AlertKind, string> = {
   LOW_BALANCE: "Solde bas",
   BUDGET_OVERRUN: "Dépassement de budget",
+  BUDGET_THRESHOLD: "Seuil de budget atteint",
   UNUSUAL_EXPENSE: "Dépense au-dessus du seuil",
   STALE_INTEGRATION: "Synchronisation ancienne",
   OVERDUE_EVENT: "Échéance dépassée",
@@ -86,6 +88,19 @@ export function budgetOverrunFingerprint(
   monthKey: string,
 ): string {
   return `budget-overrun:${categoryId}:${currency}:${monthKey}`;
+}
+
+/**
+ * The threshold rule is complementary to the overrun one, never a duplicate: it fires
+ * while the budget is **not** exceeded yet (see `evaluateBudgetThreshold`), so an
+ * episode resolves the moment the overrun one opens.
+ */
+export function budgetThresholdFingerprint(
+  categoryId: string,
+  currency: Currency,
+  monthKey: string,
+): string {
+  return `budget-threshold:${categoryId}:${currency}:${monthKey}`;
 }
 
 export function unusualExpenseFingerprint(transactionId: string): string {
@@ -206,6 +221,39 @@ function describeBudgetOverrun(inputs: z.infer<typeof BUDGET_OVERRUN_INPUTS>): D
   };
 }
 
+const BUDGET_THRESHOLD_INPUTS = z.object({
+  categoryName: z.string(),
+  currency: z.string(),
+  month: z.string(),
+  planned: z.string(),
+  actual: z.string(),
+  percent: z.string(),
+  thresholdPercent: z.string(),
+});
+
+function describeBudgetThreshold(inputs: z.infer<typeof BUDGET_THRESHOLD_INPUTS>): DescribedAlert {
+  const planned = money(inputs.planned, inputs.currency);
+  const actual = money(inputs.actual, inputs.currency);
+
+  if (planned === null || actual === null) {
+    return unreadable(ALERT_KIND_LABELS.BUDGET_THRESHOLD);
+  }
+
+  let monthLabel = inputs.month;
+  try {
+    const { year, month } = parseMonthKey(inputs.month);
+    monthLabel = formatMonthLabel(year, month);
+  } catch {
+    // Keep the raw key: a label is display, never a reason to crash.
+  }
+
+  return {
+    title: ALERT_KIND_LABELS.BUDGET_THRESHOLD,
+    reason: `Budget « ${inputs.categoryName} » (${inputs.currency}, ${monthLabel}) : ${actual} réalisés pour ${planned} planifiés, soit ${frenchNumber(inputs.percent)} % du budget — le seuil d'alerte de ${frenchNumber(inputs.thresholdPercent)} % est atteint, sans dépassement pour l'instant.`,
+    tone: "warning",
+  };
+}
+
 const UNUSUAL_EXPENSE_INPUTS = z.object({
   label: z.string(),
   amount: z.string(),
@@ -322,6 +370,10 @@ export function describeAlert(alert: { kind: AlertKind; inputs: unknown }): Desc
       const result = BUDGET_OVERRUN_INPUTS.safeParse(value);
       return result.success ? describeBudgetOverrun(result.data) : unreadable(ALERT_KIND_LABELS.BUDGET_OVERRUN);
     },
+    BUDGET_THRESHOLD: (value) => {
+      const result = BUDGET_THRESHOLD_INPUTS.safeParse(value);
+      return result.success ? describeBudgetThreshold(result.data) : unreadable(ALERT_KIND_LABELS.BUDGET_THRESHOLD);
+    },
     UNUSUAL_EXPENSE: (value) => {
       const result = UNUSUAL_EXPENSE_INPUTS.safeParse(value);
       return result.success ? describeUnusualExpense(result.data) : unreadable(ALERT_KIND_LABELS.UNUSUAL_EXPENSE);
@@ -365,6 +417,8 @@ export const ALERT_RULE_DESCRIPTIONS: Record<AlertKind, string> = {
     "Déclenche quand le solde enregistré d'un compte passe sous le seuil. Un compte sans aucune opération n'est pas « à zéro » : il n'est pas évalué. Un seuil de zéro vaut pour toutes les devises ; un seuil supérieur ne compare que les comptes dans sa devise (aucune conversion n'est faite).",
   BUDGET_OVERRUN:
     "Déclenche quand le réalisé d'un budget de dépense dépasse le montant planifié du mois (règle du Suivi : remboursements déduits, opérations du mois uniquement). La marge est le pourcentage de dépassement à partir duquel l'alerte apparaît.",
+  BUDGET_THRESHOLD:
+    "Déclenche quand le réalisé d'un budget de dépense atteint le pourcentage configuré du montant planifié, sans l'avoir encore dépassé : c'est l'alerte préventive, avant le dépassement. Sur un même mois, elle se résout d'elle-même dès que le dépassement prend le relais. Un mois incomplètement lu ne produit aucune alerte.",
   UNUSUAL_EXPENSE:
     "Déclenche pour une dépense du mois en cours dont le montant atteint ou dépasse le seuil, dans sa devise. Les opérations portant une référence (prévisions confirmées, salaire) sont exclues : elles ne sont pas inhabituelles par construction. Seuil strictement positif requis.",
   STALE_INTEGRATION:
@@ -390,6 +444,15 @@ export const ALERT_RULE_DEFAULTS: Record<AlertKind, AlertRuleConfig> = {
     thresholdAmount: null,
     thresholdCurrency: null,
     thresholdPercent: new Decimal(0),
+    thresholdDays: null,
+  },
+  BUDGET_THRESHOLD: {
+    kind: "BUDGET_THRESHOLD",
+    enabled: true,
+    thresholdAmount: null,
+    thresholdCurrency: null,
+    // Eighty percent of the envelope: late enough to be meaningful, early enough to act.
+    thresholdPercent: new Decimal(80),
     thresholdDays: null,
   },
   UNUSUAL_EXPENSE: {
@@ -557,6 +620,10 @@ export const alertRulesInputSchema = z.object({
     enabled: z.boolean(),
     thresholdPercent: optionalPercentField,
   }),
+  budgetThreshold: z.object({
+    enabled: z.boolean(),
+    thresholdPercent: optionalPercentField,
+  }),
   unusualExpense: amountRuleBlock.superRefine((value, ctx) => {
     if (!value.enabled && value.thresholdAmount === null) {
       return;
@@ -628,6 +695,10 @@ export function toAlertRulesFormValues(
     budgetOverrun: {
       enabled: byKind.get("BUDGET_OVERRUN")?.enabled ?? true,
       thresholdPercent: byKind.get("BUDGET_OVERRUN")?.thresholdPercent?.toString() ?? "",
+    },
+    budgetThreshold: {
+      enabled: byKind.get("BUDGET_THRESHOLD")?.enabled ?? true,
+      thresholdPercent: byKind.get("BUDGET_THRESHOLD")?.thresholdPercent?.toString() ?? "",
     },
     unusualExpense: {
       enabled: byKind.get("UNUSUAL_EXPENSE")?.enabled ?? true,

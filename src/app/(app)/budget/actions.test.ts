@@ -13,6 +13,8 @@ const updateBudgetMock = vi.fn();
 const deleteBudgetMock = vi.fn();
 const findSalarySettingMock = vi.fn();
 const upsertSalarySettingMock = vi.fn();
+const listSalaryRatesMock = vi.fn();
+const upsertSalaryRateMock = vi.fn();
 const listWorkDaysMock = vi.fn();
 const findWorkDayMock = vi.fn();
 const createWorkDayMock = vi.fn();
@@ -20,8 +22,20 @@ const updateWorkDayMock = vi.fn();
 const deleteWorkDayMock = vi.fn();
 const ensureCategoryMock = vi.fn();
 const findTransactionByExternalRefMock = vi.fn();
+const findTransactionMock = vi.fn();
 const findCashflowLinkedToTransactionMock = vi.fn();
 const revalidatePathMock = vi.fn();
+const updateAccountMock = vi.fn();
+const setAccountArchivedMock = vi.fn();
+const findManagedAccountMock = vi.fn();
+const countAccountTransactionsMock = vi.fn();
+const updateCategoryMock = vi.fn();
+const countCategoryReferencesMock = vi.fn();
+const mergeCategoriesMock = vi.fn();
+const deleteCategoryMock = vi.fn();
+const createTransferGroupMock = vi.fn();
+const setTransactionReconciledMock = vi.fn();
+const copyBudgetsMock = vi.fn();
 
 vi.mock("@/lib/auth/guard", () => ({ requireUser: () => requireUserMock() }));
 vi.mock("@/modules/budget/repository", () => ({
@@ -36,6 +50,8 @@ vi.mock("@/modules/budget/repository", () => ({
   deleteBudget: (...args: unknown[]) => deleteBudgetMock(...args),
   findSalarySetting: (...args: unknown[]) => findSalarySettingMock(...args),
   upsertSalarySetting: (...args: unknown[]) => upsertSalarySettingMock(...args),
+  listSalaryRates: (...args: unknown[]) => listSalaryRatesMock(...args),
+  upsertSalaryRate: (...args: unknown[]) => upsertSalaryRateMock(...args),
   listWorkDays: (...args: unknown[]) => listWorkDaysMock(...args),
   findWorkDay: (...args: unknown[]) => findWorkDayMock(...args),
   createWorkDay: (...args: unknown[]) => createWorkDayMock(...args),
@@ -44,6 +60,18 @@ vi.mock("@/modules/budget/repository", () => ({
   ensureCategory: (...args: unknown[]) => ensureCategoryMock(...args),
   findTransactionByExternalRef: (...args: unknown[]) =>
     findTransactionByExternalRefMock(...args),
+  findTransaction: (...args: unknown[]) => findTransactionMock(...args),
+  updateAccount: (...args: unknown[]) => updateAccountMock(...args),
+  setAccountArchived: (...args: unknown[]) => setAccountArchivedMock(...args),
+  findManagedAccount: (...args: unknown[]) => findManagedAccountMock(...args),
+  countAccountTransactions: (...args: unknown[]) => countAccountTransactionsMock(...args),
+  updateCategory: (...args: unknown[]) => updateCategoryMock(...args),
+  countCategoryReferences: (...args: unknown[]) => countCategoryReferencesMock(...args),
+  mergeCategories: (...args: unknown[]) => mergeCategoriesMock(...args),
+  deleteCategory: (...args: unknown[]) => deleteCategoryMock(...args),
+  createTransferGroup: (...args: unknown[]) => createTransferGroupMock(...args),
+  setTransactionReconciled: (...args: unknown[]) => setTransactionReconciledMock(...args),
+  copyBudgets: (...args: unknown[]) => copyBudgetsMock(...args),
   createAccount: vi.fn(),
   createCategory: vi.fn(),
 }));
@@ -58,13 +86,21 @@ vi.mock("next/cache", () => ({
 const {
   adjustWorkDayHoursAction,
   bookSalaryAction,
+  copyBudgetsAction,
   createBudgetAction,
   createTransactionAction,
+  createTransferAction,
   cycleWorkDayAction,
   deleteBudgetAction,
+  deleteCategoryAction,
   deleteTransactionAction,
+  mergeCategoriesAction,
   saveSalarySettingAction,
+  setAccountArchivedAction,
+  setTransactionReconciledAction,
+  updateAccountAction,
   updateBudgetAction,
+  updateCategoryAction,
   updateTransactionAction,
 } = await import("./actions");
 
@@ -77,7 +113,9 @@ const OWNER = { id: "owner-1", email: "owner@example.test", name: null };
 describe("deleteTransactionAction", () => {
   beforeEach(() => {
     requireUserMock.mockReset().mockResolvedValue(OWNER);
-    deleteTransactionMock.mockReset().mockResolvedValue(true);
+    deleteTransactionMock
+      .mockReset()
+      .mockResolvedValue({ deleted: true, deletedCount: 1, grouped: false });
     findCashflowLinkedToTransactionMock.mockReset().mockResolvedValue(null);
     revalidatePathMock.mockReset();
   });
@@ -108,12 +146,21 @@ describe("deleteTransactionAction", () => {
   });
 
   it("reports an unknown or already deleted transaction instead of pretending", async () => {
-    deleteTransactionMock.mockResolvedValue(false);
+    deleteTransactionMock.mockResolvedValue({ deleted: false, deletedCount: 0, grouped: false });
 
     const result = await deleteTransactionAction({ id: "tx-gone" });
 
     expect(result.status).toBe("invalid");
     expect(result.status === "invalid" && result.message).toMatch(/introuvable/);
+  });
+
+  it("says both movements were removed when the row belongs to a linked transfer", async () => {
+    deleteTransactionMock.mockResolvedValue({ deleted: true, deletedCount: 2, grouped: true });
+
+    const result = await deleteTransactionAction({ id: "tx-leg-1" });
+
+    expect(result.status).toBe("ok");
+    expect(result.status === "ok" && result.message).toMatch(/deux mouvements/);
   });
 
   it("rejects a payload without an identifier", async () => {
@@ -215,7 +262,29 @@ describe("updateTransactionAction", () => {
     findCategoryMock.mockReset().mockResolvedValue(CATEGORY);
     createTransactionMock.mockReset().mockResolvedValue({ id: "tx-1" });
     updateTransactionMock.mockReset().mockResolvedValue(true);
+    findTransactionMock
+      .mockReset()
+      .mockResolvedValue({ id: "tx-1", transferGroupId: null });
     revalidatePathMock.mockReset();
+  });
+
+  it("refuses to edit one leg of a linked transfer: the two halves are one movement", async () => {
+    findTransactionMock.mockResolvedValue({ id: "tx-1", transferGroupId: "group-1" });
+
+    const result = await updateTransactionAction(validUpdate);
+
+    expect(result.status).toBe("invalid");
+    expect(result.status === "invalid" && result.message).toMatch(/virement/);
+    expect(updateTransactionMock).not.toHaveBeenCalled();
+  });
+
+  it("reports a row that disappeared between the read and the write", async () => {
+    findTransactionMock.mockResolvedValue(null);
+
+    const result = await updateTransactionAction(validUpdate);
+
+    expect(result.status).toBe("invalid");
+    expect(updateTransactionMock).not.toHaveBeenCalled();
   });
 
   it("replaces every editable field of the owner's own row", async () => {
@@ -640,46 +709,75 @@ describe("deleteBudgetAction", () => {
 
 /** Fictitious salary data only. */
 const SALARY_SETTING = {
-  hourlyRate: new Decimal("20.50"),
   hoursPerDay: new Decimal("7.5"),
   currency: "EUR" as const,
 };
+
+/** One change point in August, so October resolves to 20.50 €. */
+const SALARY_RATES = [{ year: 2026, month: 8, hourlyRate: new Decimal("20.50") }];
+
 const WORK_DATE = new Date("2026-10-05T00:00:00.000Z");
 
 describe("saveSalarySettingAction", () => {
   beforeEach(() => {
     requireUserMock.mockReset().mockResolvedValue(OWNER);
+    listSalaryRatesMock.mockReset().mockResolvedValue([]);
+    upsertSalaryRateMock.mockReset().mockResolvedValue(undefined);
     upsertSalarySettingMock.mockReset().mockResolvedValue(undefined);
     revalidatePathMock.mockReset();
   });
 
-  it("stores the rate and the day length for the signed-in owner", async () => {
+  it("stores the month's rate as a change point, plus the global options", async () => {
     const result = await saveSalarySettingAction({
+      month: "2026-10",
       hourlyRate: "20,50",
       hoursPerDay: "7,5",
       currency: "EUR",
     });
 
     expect(result).toEqual({ status: "ok" });
-    expect(upsertSalarySettingMock).toHaveBeenCalledTimes(1);
+    expect(upsertSalaryRateMock).toHaveBeenCalledTimes(1);
 
-    const [input] = upsertSalarySettingMock.mock.calls[0] as [Record<string, unknown>];
+    const [rateInput] = upsertSalaryRateMock.mock.calls[0] as [Record<string, unknown>];
 
-    expect(input.userId).toBe(OWNER.id);
-    expect(input.currency).toBe("EUR");
-    // The typed strings became exact decimals before they reached persistence.
-    expect((input.hourlyRate as { toFixed(scale: number): string }).toFixed(2)).toBe(
+    expect(rateInput.userId).toBe(OWNER.id);
+    expect(rateInput.year).toBe(2026);
+    expect(rateInput.month).toBe(10);
+    // The typed string became an exact decimal before it reached persistence.
+    expect((rateInput.hourlyRate as { toFixed(scale: number): string }).toFixed(2)).toBe(
       "20.50",
     );
-    expect((input.hoursPerDay as { toFixed(scale: number): string }).toFixed(2)).toBe(
+
+    const [settingInput] = upsertSalarySettingMock.mock.calls[0] as [Record<string, unknown>];
+
+    expect(settingInput.userId).toBe(OWNER.id);
+    expect(settingInput.currency).toBe("EUR");
+    expect((settingInput.hoursPerDay as { toFixed(scale: number): string }).toFixed(2)).toBe(
       "7.50",
     );
     expect(revalidatePathMock).toHaveBeenCalledWith("/budget");
   });
 
+  it("writes no redundant change point when the month's rate is unchanged", async () => {
+    listSalaryRatesMock.mockResolvedValue(SALARY_RATES);
+
+    const result = await saveSalarySettingAction({
+      month: "2026-10",
+      hourlyRate: "20,50",
+      hoursPerDay: "8",
+      currency: "EUR",
+    });
+
+    expect(result).toEqual({ status: "ok" });
+    // Editing the day length must not sprinkle change points: only the options move.
+    expect(upsertSalaryRateMock).not.toHaveBeenCalled();
+    expect(upsertSalarySettingMock).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses a rate that is not strictly positive, before writing", async () => {
     for (const hourlyRate of ["0", "-1", "vingt"]) {
       const result = await saveSalarySettingAction({
+        month: "2026-10",
         hourlyRate,
         hoursPerDay: "7",
         currency: "EUR",
@@ -688,33 +786,53 @@ describe("saveSalarySettingAction", () => {
       expect(result.status).toBe("invalid");
     }
 
+    expect(upsertSalaryRateMock).not.toHaveBeenCalled();
     expect(upsertSalarySettingMock).not.toHaveBeenCalled();
   });
 
   it("refuses an implausible day length", async () => {
     const result = await saveSalarySettingAction({
+      month: "2026-10",
       hourlyRate: "20",
       hoursPerDay: "25",
       currency: "EUR",
     });
 
     expect(result.status).toBe("invalid");
-    expect(upsertSalarySettingMock).not.toHaveBeenCalled();
+    expect(upsertSalaryRateMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a month that does not exist", async () => {
+    const result = await saveSalarySettingAction({
+      month: "2026-13",
+      hourlyRate: "20",
+      hoursPerDay: "7",
+      currency: "EUR",
+    });
+
+    expect(result.status).toBe("invalid");
+    expect(upsertSalaryRateMock).not.toHaveBeenCalled();
   });
 
   it("checks the session before touching anything", async () => {
     requireUserMock.mockRejectedValue(new Error("redirect:/login"));
 
     await expect(
-      saveSalarySettingAction({ hourlyRate: "20", hoursPerDay: "7", currency: "EUR" }),
+      saveSalarySettingAction({
+        month: "2026-10",
+        hourlyRate: "20",
+        hoursPerDay: "7",
+        currency: "EUR",
+      }),
     ).rejects.toThrow("redirect:/login");
-    expect(upsertSalarySettingMock).not.toHaveBeenCalled();
+    expect(upsertSalaryRateMock).not.toHaveBeenCalled();
   });
 
   it("answers with a generic message when the database fails", async () => {
-    upsertSalarySettingMock.mockRejectedValue(new Error("connection lost"));
+    upsertSalaryRateMock.mockRejectedValue(new Error("connection lost"));
 
     const result = await saveSalarySettingAction({
+      month: "2026-10",
       hourlyRate: "20",
       hoursPerDay: "7",
       currency: "EUR",
@@ -731,6 +849,7 @@ describe("cycleWorkDayAction", () => {
   beforeEach(() => {
     requireUserMock.mockReset().mockResolvedValue(OWNER);
     findSalarySettingMock.mockReset().mockResolvedValue(SALARY_SETTING);
+    listSalaryRatesMock.mockReset().mockResolvedValue(SALARY_RATES);
     findWorkDayMock.mockReset().mockResolvedValue(null);
     createWorkDayMock.mockReset().mockResolvedValue({ id: "work-day-1" });
     updateWorkDayMock.mockReset().mockResolvedValue(true);
@@ -796,6 +915,16 @@ describe("cycleWorkDayAction", () => {
     expect(createWorkDayMock).not.toHaveBeenCalled();
     expect(updateWorkDayMock).not.toHaveBeenCalled();
     expect(deleteWorkDayMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses to plan a day whose month has no rate at all", async () => {
+    listSalaryRatesMock.mockResolvedValue([]);
+
+    const result = await cycleWorkDayAction({ date: "2026-10-05" });
+
+    expect(result.status).toBe("invalid");
+    expect(result.status === "invalid" && result.message).toMatch(/Aucun taux horaire/);
+    expect(createWorkDayMock).not.toHaveBeenCalled();
   });
 
   it("rejects an impossible date before reading anything", async () => {
@@ -933,6 +1062,7 @@ describe("bookSalaryAction", () => {
   beforeEach(() => {
     requireUserMock.mockReset().mockResolvedValue(OWNER);
     findSalarySettingMock.mockReset().mockResolvedValue(SALARY_SETTING);
+    listSalaryRatesMock.mockReset().mockResolvedValue(SALARY_RATES);
     findAccountMock.mockReset().mockResolvedValue(EUR_ACCOUNT);
     findTransactionByExternalRefMock.mockReset().mockResolvedValue(null);
     listWorkDaysMock.mockReset().mockResolvedValue([
@@ -1039,6 +1169,16 @@ describe("bookSalaryAction", () => {
     expect(createTransactionMock).not.toHaveBeenCalled();
   });
 
+  it("refuses to book a month that has no rate at all", async () => {
+    listSalaryRatesMock.mockResolvedValue([]);
+
+    const result = await bookSalaryAction(BOOKING);
+
+    expect(result.status).toBe("invalid");
+    expect(result.status === "invalid" && result.message).toMatch(/Aucun taux horaire/);
+    expect(createTransactionMock).not.toHaveBeenCalled();
+  });
+
   it("refuses a month that is already booked", async () => {
     findTransactionByExternalRefMock.mockResolvedValue({ id: "tx-existing" });
 
@@ -1084,5 +1224,458 @@ describe("bookSalaryAction", () => {
       status: "error",
       message: "Enregistrement impossible pour le moment. Réessayez dans un instant.",
     });
+  });
+});
+
+/**
+ * The account, category, transfer and reconciliation actions added with the budget
+ * management pass. Same contract as everywhere: mocked repositories, no database, and
+ * the owner always comes from the session.
+ */
+
+describe("updateAccountAction", () => {
+  const ACCOUNT_ROW = {
+    id: "account-1",
+    name: "Compte courant",
+    type: "CHECKING" as const,
+    currency: "EUR" as const,
+    archivedAt: null,
+  };
+
+  beforeEach(() => {
+    requireUserMock.mockReset().mockResolvedValue(OWNER);
+    findManagedAccountMock.mockReset().mockResolvedValue(ACCOUNT_ROW);
+    countAccountTransactionsMock.mockReset().mockResolvedValue(0);
+    updateAccountMock.mockReset().mockResolvedValue(true);
+    revalidatePathMock.mockReset();
+  });
+
+  it("renames an account and trusts the session for ownership", async () => {
+    const result = await updateAccountAction({
+      id: ACCOUNT_ROW.id,
+      name: "Compte principal",
+      type: "CHECKING",
+      currency: "EUR",
+    });
+
+    expect(result).toEqual({ status: "ok" });
+    expect(updateAccountMock).toHaveBeenCalledWith(OWNER.id, ACCOUNT_ROW.id, {
+      name: "Compte principal",
+      type: "CHECKING",
+      currency: "EUR",
+    });
+  });
+
+  it("refuses a currency change on an account that already has transactions", async () => {
+    countAccountTransactionsMock.mockResolvedValue(3);
+
+    const result = await updateAccountAction({
+      id: ACCOUNT_ROW.id,
+      name: "Compte courant",
+      type: "CHECKING",
+      currency: "USD",
+    });
+
+    expect(result.status).toBe("invalid");
+    expect(result.status === "invalid" && result.message).toMatch(/devise/);
+    expect(updateAccountMock).not.toHaveBeenCalled();
+  });
+
+  it("allows a currency change while the account is empty", async () => {
+    const result = await updateAccountAction({
+      id: ACCOUNT_ROW.id,
+      name: "Compte courant",
+      type: "CHECKING",
+      currency: "USD",
+    });
+
+    expect(result).toEqual({ status: "ok" });
+    expect(updateAccountMock).toHaveBeenCalled();
+  });
+
+  it("reports an account that no longer exists", async () => {
+    findManagedAccountMock.mockResolvedValue(null);
+
+    const result = await updateAccountAction({
+      id: "gone",
+      name: "X",
+      type: "CHECKING",
+      currency: "EUR",
+    });
+
+    expect(result.status).toBe("invalid");
+    expect(updateAccountMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("setAccountArchivedAction", () => {
+  beforeEach(() => {
+    requireUserMock.mockReset().mockResolvedValue(OWNER);
+    setAccountArchivedMock.mockReset().mockResolvedValue(true);
+    revalidatePathMock.mockReset();
+  });
+
+  it("archives the account and explains what changes", async () => {
+    const result = await setAccountArchivedAction({ id: "account-1", archived: "true" });
+
+    expect(result.status).toBe("ok");
+    expect(result.status === "ok" && result.message).toMatch(/archivé/);
+    expect(setAccountArchivedMock).toHaveBeenCalledWith(OWNER.id, "account-1", true);
+  });
+
+  it("restores the account", async () => {
+    const result = await setAccountArchivedAction({ id: "account-1", archived: "false" });
+
+    expect(result.status).toBe("ok");
+    expect(setAccountArchivedMock).toHaveBeenCalledWith(OWNER.id, "account-1", false);
+  });
+});
+
+describe("updateCategoryAction", () => {
+  const CATEGORY_ROW = { id: "category-1", name: "Courses", kind: "EXPENSE" as const };
+
+  beforeEach(() => {
+    requireUserMock.mockReset().mockResolvedValue(OWNER);
+    findCategoryMock.mockReset().mockResolvedValue(CATEGORY_ROW);
+    countCategoryReferencesMock
+      .mockReset()
+      .mockResolvedValue({ transactions: 0, budgets: 0, recurring: 0 });
+    updateCategoryMock.mockReset().mockResolvedValue(true);
+    revalidatePathMock.mockReset();
+  });
+
+  it("renames a category without touching its kind", async () => {
+    const result = await updateCategoryAction({
+      id: CATEGORY_ROW.id,
+      name: "Alimentation",
+      kind: "EXPENSE",
+    });
+
+    expect(result).toEqual({ status: "ok" });
+    expect(updateCategoryMock).toHaveBeenCalledWith(OWNER.id, CATEGORY_ROW.id, {
+      name: "Alimentation",
+      kind: "EXPENSE",
+    });
+  });
+
+  it("refuses a kind change while anything references the category", async () => {
+    countCategoryReferencesMock.mockResolvedValue({
+      transactions: 12,
+      budgets: 2,
+      recurring: 1,
+    });
+
+    const result = await updateCategoryAction({
+      id: CATEGORY_ROW.id,
+      name: "Courses",
+      kind: "INCOME",
+    });
+
+    expect(result.status).toBe("invalid");
+    expect(result.status === "invalid" && result.message).toMatch(/Fusionnez/);
+    expect(updateCategoryMock).not.toHaveBeenCalled();
+  });
+
+  it("allows a kind change on an unused category", async () => {
+    const result = await updateCategoryAction({
+      id: CATEGORY_ROW.id,
+      name: "Courses",
+      kind: "INCOME",
+    });
+
+    expect(result).toEqual({ status: "ok" });
+    expect(updateCategoryMock).toHaveBeenCalled();
+  });
+
+  it("translates the unique constraint into a field error", async () => {
+    const conflict = Object.assign(new Error("unique"), { code: "P2002" });
+    updateCategoryMock.mockRejectedValue(conflict);
+
+    const result = await updateCategoryAction({
+      id: CATEGORY_ROW.id,
+      name: "Alimentation",
+      kind: "EXPENSE",
+    });
+
+    expect(result.status).toBe("invalid");
+    expect(
+      result.status === "invalid" && result.fieldErrors.name?.join(" "),
+    ).toMatch(/existe déjà/);
+  });
+});
+
+describe("mergeCategoriesAction", () => {
+  const SOURCE = { id: "category-1", name: "Courses", kind: "EXPENSE" as const };
+  const TARGET = { id: "category-2", name: "Alimentation", kind: "EXPENSE" as const };
+
+  beforeEach(() => {
+    requireUserMock.mockReset().mockResolvedValue(OWNER);
+    findCategoryMock.mockReset().mockImplementation((_userId: string, id: string) =>
+      Promise.resolve(id === SOURCE.id ? SOURCE : id === TARGET.id ? TARGET : null),
+    );
+    mergeCategoriesMock.mockReset().mockResolvedValue({
+      movedTransactions: 4,
+      movedRecurring: 1,
+      movedBudgets: 2,
+      droppedBudgets: 1,
+    });
+    revalidatePathMock.mockReset();
+  });
+
+  it("merges same-kind categories and reports every count, dropped budgets included", async () => {
+    const result = await mergeCategoriesAction({
+      sourceId: SOURCE.id,
+      targetId: TARGET.id,
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.status === "ok" && result.message).toContain("4 opérations");
+    expect(result.status === "ok" && result.message).toMatch(/doublon/);
+    expect(mergeCategoriesMock).toHaveBeenCalledWith(OWNER.id, SOURCE.id, TARGET.id);
+  });
+
+  it("refuses a source equal to the target", async () => {
+    const result = await mergeCategoriesAction({
+      sourceId: SOURCE.id,
+      targetId: SOURCE.id,
+    });
+
+    expect(result.status).toBe("invalid");
+    expect(mergeCategoriesMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses merging across kinds: history would move to the wrong side", async () => {
+    findCategoryMock.mockImplementation((_userId: string, id: string) =>
+      Promise.resolve(
+        id === SOURCE.id
+          ? SOURCE
+          : { id: TARGET.id, name: "Salaire", kind: "INCOME" as const },
+      ),
+    );
+
+    const result = await mergeCategoriesAction({
+      sourceId: SOURCE.id,
+      targetId: TARGET.id,
+    });
+
+    expect(result.status).toBe("invalid");
+    expect(mergeCategoriesMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("deleteCategoryAction", () => {
+  beforeEach(() => {
+    requireUserMock.mockReset().mockResolvedValue(OWNER);
+    deleteCategoryMock.mockReset().mockResolvedValue(true);
+    revalidatePathMock.mockReset();
+  });
+
+  it("deletes the category of the signed-in owner", async () => {
+    const result = await deleteCategoryAction({ id: "category-1" });
+
+    expect(result).toEqual({ status: "ok" });
+    expect(deleteCategoryMock).toHaveBeenCalledWith(OWNER.id, "category-1");
+  });
+
+  it("reports an already deleted category", async () => {
+    deleteCategoryMock.mockResolvedValue(false);
+
+    const result = await deleteCategoryAction({ id: "gone" });
+
+    expect(result.status).toBe("invalid");
+  });
+});
+
+describe("createTransferAction", () => {
+  const FROM = {
+    id: "account-1",
+    name: "Compte courant",
+    type: "CHECKING" as const,
+    currency: "EUR" as const,
+  };
+  const TO = {
+    id: "account-2",
+    name: "Livret A",
+    type: "SAVINGS" as const,
+    currency: "EUR" as const,
+  };
+
+  beforeEach(() => {
+    requireUserMock.mockReset().mockResolvedValue(OWNER);
+    findAccountMock.mockReset().mockImplementation((_userId: string, id: string) =>
+      Promise.resolve(id === FROM.id ? FROM : id === TO.id ? TO : null),
+    );
+    createTransferGroupMock
+      .mockReset()
+      .mockResolvedValue({ groupId: "group-1", transactionIds: ["tx-out", "tx-in"] });
+    revalidatePathMock.mockReset();
+  });
+
+  it("writes both legs with the default labels, in the accounts' currency", async () => {
+    const result = await createTransferAction({
+      fromAccountId: FROM.id,
+      toAccountId: TO.id,
+      amount: "300,00",
+      operationDate: "2026-10-07",
+      label: "",
+      notes: "",
+    });
+
+    expect(result.status).toBe("ok");
+    expect(createTransferGroupMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: OWNER.id,
+        fromAccountId: FROM.id,
+        toAccountId: TO.id,
+        currency: "EUR",
+        sourceLabel: "Virement vers Livret A",
+        destinationLabel: "Virement depuis Compte courant",
+      }),
+    );
+  });
+
+  it("keeps a custom label on both legs", async () => {
+    await createTransferAction({
+      fromAccountId: FROM.id,
+      toAccountId: TO.id,
+      amount: "50",
+      operationDate: "2026-10-07",
+      label: "Épargne octobre",
+      notes: "",
+    });
+
+    const [input] = createTransferGroupMock.mock.calls[0] as [
+      { sourceLabel: string; destinationLabel: string },
+    ];
+    expect(input.sourceLabel).toBe("Épargne octobre");
+    expect(input.destinationLabel).toBe("Épargne octobre");
+  });
+
+  it("refuses a cross-currency transfer instead of converting", async () => {
+    findAccountMock.mockImplementation((_userId: string, id: string) =>
+      Promise.resolve(id === FROM.id ? FROM : { ...TO, currency: "USD" as const }),
+    );
+
+    const result = await createTransferAction({
+      fromAccountId: FROM.id,
+      toAccountId: TO.id,
+      amount: "300,00",
+      operationDate: "2026-10-07",
+      label: "",
+      notes: "",
+    });
+
+    expect(result.status).toBe("invalid");
+    expect(result.status === "invalid" && result.message).toMatch(/conversion/);
+    expect(createTransferGroupMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses the same account twice before reading anything", async () => {
+    const result = await createTransferAction({
+      fromAccountId: FROM.id,
+      toAccountId: FROM.id,
+      amount: "300,00",
+      operationDate: "2026-10-07",
+      label: "",
+      notes: "",
+    });
+
+    expect(result.status).toBe("invalid");
+    expect(createTransferGroupMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a zero or negative amount before reading anything", async () => {
+    const result = await createTransferAction({
+      fromAccountId: FROM.id,
+      toAccountId: TO.id,
+      amount: "0",
+      operationDate: "2026-10-07",
+      label: "",
+      notes: "",
+    });
+
+    expect(result.status).toBe("invalid");
+    expect(createTransferGroupMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("setTransactionReconciledAction", () => {
+  beforeEach(() => {
+    requireUserMock.mockReset().mockResolvedValue(OWNER);
+    setTransactionReconciledMock.mockReset().mockResolvedValue(true);
+    revalidatePathMock.mockReset();
+  });
+
+  it("ticks one transaction, owner from the session", async () => {
+    const result = await setTransactionReconciledAction({ id: "tx-1", reconciled: "true" });
+
+    expect(result).toEqual({ status: "ok" });
+    expect(setTransactionReconciledMock).toHaveBeenCalledWith({
+      userId: OWNER.id,
+      transactionId: "tx-1",
+      reconciled: true,
+    });
+  });
+
+  it("unticks it too", async () => {
+    await setTransactionReconciledAction({ id: "tx-1", reconciled: "false" });
+
+    expect(setTransactionReconciledMock).toHaveBeenCalledWith({
+      userId: OWNER.id,
+      transactionId: "tx-1",
+      reconciled: false,
+    });
+  });
+
+  it("reports a missing transaction", async () => {
+    setTransactionReconciledMock.mockResolvedValue(false);
+
+    const result = await setTransactionReconciledAction({ id: "gone", reconciled: "true" });
+
+    expect(result.status).toBe("invalid");
+  });
+});
+
+describe("copyBudgetsAction", () => {
+  beforeEach(() => {
+    requireUserMock.mockReset().mockResolvedValue(OWNER);
+    revalidatePathMock.mockReset();
+  });
+
+  it("copies the previous month onto the displayed one and reports both counts", async () => {
+    copyBudgetsMock.mockReset().mockResolvedValue({ created: 5, skipped: 2 });
+
+    const result = await copyBudgetsAction({ month: "2026-11" });
+
+    expect(result.status).toBe("ok");
+    expect(result.status === "ok" && result.message).toContain("5 budgets");
+    expect(result.status === "ok" && result.message).toMatch(/2 déjà présents/);
+    // October is the previous month of November: the shift crosses no year here.
+    expect(copyBudgetsMock).toHaveBeenCalledWith({
+      userId: OWNER.id,
+      from: { year: 2026, month: 10 },
+      to: { year: 2026, month: 11 },
+    });
+  });
+
+  it("crosses the year boundary for January", async () => {
+    copyBudgetsMock.mockResolvedValue({ created: 1, skipped: 0 });
+
+    await copyBudgetsAction({ month: "2027-01" });
+
+    expect(copyBudgetsMock).toHaveBeenCalledWith({
+      userId: OWNER.id,
+      from: { year: 2026, month: 12 },
+      to: { year: 2027, month: 1 },
+    });
+  });
+
+  it("answers an empty source month plainly, not as an error", async () => {
+    copyBudgetsMock.mockResolvedValue({ created: 0, skipped: 0 });
+
+    const result = await copyBudgetsAction({ month: "2026-11" });
+
+    expect(result.status).toBe("ok");
+    expect(result.status === "ok" && result.message).toMatch(/aucun budget/);
   });
 });

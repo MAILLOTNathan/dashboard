@@ -89,7 +89,7 @@ function CurrencyThreshold({ threshold }: { threshold: SavingsThreshold }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           label={`Seuil conseillé (${currency})`}
           value={formatMoney({ amount: threshold.expectedTotal, currency })}
@@ -112,6 +112,23 @@ function CurrencyThreshold({ threshold }: { threshold: SavingsThreshold }) {
               : shortfall.greaterThan(0)
                 ? "Seuil − épargne enregistrée."
                 : "Le coussin dépasse le seuil recommandé."
+          }
+        />
+        <StatCard
+          label="Équivalent en mois"
+          value={
+            threshold.runwayMonths === null
+              ? "—"
+              : `${new Intl.NumberFormat("fr-FR", {
+                  minimumFractionDigits: 1,
+                  maximumFractionDigits: 1,
+                }).format(threshold.runwayMonths.toNumber())} mois`
+          }
+          tone={reached ? "positive" : "neutral"}
+          hint={
+            threshold.runwayMonths === null
+              ? "Inconnu tant que le solde d'épargne n'est pas enregistré."
+              : "Épargne enregistrée ÷ dépenses prévues moyennes : 6,0 mois couvre le seuil conseillé."
           }
         />
       </div>

@@ -9,39 +9,61 @@ import {
   type ActionResult,
 } from "@/lib/actions";
 import { requireUser } from "@/lib/auth/guard";
-import { formatMonthLabel, monthRange } from "@/lib/dates";
+import { formatMonthLabel, monthRange, parseMonthKey, shiftMonthKey } from "@/lib/dates";
 import { recordIdInput } from "@/lib/validation";
 import {
+  accountArchiveSchema,
   accountInputSchema,
+  accountUpdateSchema,
+  budgetCopySchema,
   budgetInputSchema,
+  budgetMonthKey,
   budgetUpdateSchema,
   categoryInputSchema,
+  categoryMergeSchema,
+  categoryUpdateSchema,
   DUPLICATE_BUDGET_MESSAGE,
+  reconciliationInputSchema,
   transactionFormSchema,
   transactionUpdateSchema,
+  transferInputSchema,
   type CategorySummary,
   type ValidatedBudgetInput,
 } from "@/modules/budget/domain";
 import {
+  copyBudgets,
+  countAccountTransactions,
+  countCategoryReferences,
   createAccount,
   createBudget,
   createCategory,
   createTransaction,
+  createTransferGroup,
   createWorkDay,
   deleteBudget,
+  deleteCategory,
   deleteTransaction,
   deleteWorkDay,
   ensureCategory,
   findAccount,
   findBudgetByPeriod,
   findCategory,
+  findManagedAccount,
   findSalarySetting,
+  findTransaction,
   findTransactionByExternalRef,
   findWorkDay,
+  listSalaryRates,
   listWorkDays,
+  mergeCategories,
+  setAccountArchived,
+  setTransactionReconciled,
+  updateAccount,
   updateBudget,
+  updateCategory,
   updateTransaction,
   updateWorkDay,
+  upsertSalaryRate,
   upsertSalarySetting,
 } from "@/modules/budget/repository";
 import {
@@ -49,6 +71,8 @@ import {
   computeSalarySummary,
   DUPLICATE_SALARY_BOOKING_MESSAGE,
   nextWorkDayState,
+  noSalaryRateMessage,
+  resolveSalaryRate,
   SALARY_CATEGORY_NAME,
   salaryBookingInputSchema,
   salaryBookingRef,
@@ -57,6 +81,7 @@ import {
   workDayInputSchema,
 } from "@/modules/budget/salary";
 import { resolveTransactionInput } from "@/modules/budget/transactions";
+import { defaultTransferLabels, transferLegEditRefusedReason } from "@/modules/budget/transfers";
 import { findCashflowLinkedToTransaction } from "@/modules/real-estate/repository";
 
 /**
@@ -176,6 +201,21 @@ export async function updateTransactionAction(values: unknown): Promise<ActionRe
   }
 
   try {
+    // A leg of a linked transfer is one half of a movement: correcting it alone would
+    // let the two halves diverge. The action refuses and names the way out.
+    const existing = await findTransaction(user.id, input.id);
+    if (!existing) {
+      return rejectedResult(
+        "id",
+        "Opération introuvable : elle a peut-être été supprimée entre-temps.",
+      );
+    }
+
+    const grouped = transferLegEditRefusedReason(existing.transferGroupId);
+    if (grouped) {
+      return rejectedResult("id", grouped);
+    }
+
     const updated = await updateTransaction(user.id, input.id, {
       accountId: resolved.account.id,
       categoryId: input.categoryId,
@@ -227,18 +267,26 @@ export async function deleteTransactionAction(values: unknown): Promise<ActionRe
     );
   }
 
+  let grouped = false;
+
   try {
-    const deleted = await deleteTransaction(user.id, parsed.data.id);
-    if (!deleted) {
+    const outcome = await deleteTransaction(user.id, parsed.data.id);
+    if (!outcome.deleted) {
       return rejectedResult("id", "Opération introuvable : elle a peut-être déjà été supprimée.");
     }
+    grouped = outcome.grouped;
   } catch (error) {
     return unexpectedResult("deleteTransaction", error);
   }
 
   revalidatePath("/budget");
   revalidatePath("/dashboard");
-  return { status: "ok" };
+  return {
+    status: "ok",
+    ...(grouped
+      ? { message: "Virement supprimé : ses deux mouvements ont été retirés ensemble." }
+      : {}),
+  };
 }
 
 /**
@@ -379,11 +427,13 @@ export async function deleteBudgetAction(values: unknown): Promise<ActionResult>
 }
 
 /**
- * Saves the owner's hourly rate and default day length.
+ * Saves the simulator: the displayed month's hourly rate, plus the two global options.
  *
- * One setting per owner: the form creates it on first use and replaces it afterwards.
- * Only the rate is stored — the weekly and monthly figures shown next to it are derived
- * at render time (see `salaryEquivalents`).
+ * The rate is a **change point** — it applies from the submitted month on, until the
+ * next entry — so a row is only written when the month's resolved rate actually changes:
+ * editing the day length must not sprinkle redundant rows. Only the rate is stored; the
+ * weekly and monthly figures shown next to it are derived at render time (see
+ * `salaryEquivalents`).
  */
 export async function saveSalarySettingAction(values: unknown): Promise<ActionResult> {
   const user = await requireUser();
@@ -393,10 +443,23 @@ export async function saveSalarySettingAction(values: unknown): Promise<ActionRe
     return invalidResult(parsed.error);
   }
 
+  const { year, month } = parsed.data.month;
+
   try {
+    const rates = await listSalaryRates(user.id);
+    const current = resolveSalaryRate(rates, year, month);
+
+    if (!current || !current.hourlyRate.equals(parsed.data.hourlyRate)) {
+      await upsertSalaryRate({
+        userId: user.id,
+        year,
+        month,
+        hourlyRate: parsed.data.hourlyRate,
+      });
+    }
+
     await upsertSalarySetting({
       userId: user.id,
-      hourlyRate: parsed.data.hourlyRate,
       hoursPerDay: parsed.data.hoursPerDay,
       currency: parsed.data.currency,
     });
@@ -428,15 +491,16 @@ export async function cycleWorkDayAction(values: unknown): Promise<ActionResult>
   const date = parsed.data.date;
 
   try {
-    const [setting, current] = await Promise.all([
+    const [setting, current, rates] = await Promise.all([
       findSalarySetting(user.id),
       findWorkDay(user.id, date),
+      listSalaryRates(user.id),
     ]);
 
     if (!setting) {
       return rejectedResult(
         "date",
-        "Renseignez d'abord votre taux horaire : il transforme les heures cliquées en montants.",
+        "Renseignez d'abord le taux horaire et les heures par jour : ils transforment les jours cliqués en montants.",
       );
     }
 
@@ -445,6 +509,17 @@ export async function cycleWorkDayAction(values: unknown): Promise<ActionResult>
     if (next === "REMOVE") {
       await deleteWorkDay(user.id, date);
     } else if (current === null) {
+      // Planning a day needs the month's rate: without one, the day could never produce
+      // an amount, and the calendar would lead nowhere.
+      const monthOfDay = date.getUTCMonth() + 1;
+      const rate = resolveSalaryRate(rates, date.getUTCFullYear(), monthOfDay);
+      if (!rate) {
+        return rejectedResult(
+          "date",
+          noSalaryRateMessage(date.getUTCFullYear(), monthOfDay),
+        );
+      }
+
       await createWorkDay({
         userId: user.id,
         date,
@@ -519,16 +594,22 @@ export async function bookSalaryAction(values: unknown): Promise<ActionResult> {
   const { month, accountId, date } = parsed.data;
 
   try {
-    const [setting, account] = await Promise.all([
+    const [setting, account, rates] = await Promise.all([
       findSalarySetting(user.id),
       findAccount(user.id, accountId),
+      listSalaryRates(user.id),
     ]);
 
     if (!setting) {
       return rejectedResult(
         "accountId",
-        "Renseignez d'abord votre taux horaire : il transforme les heures en montants.",
+        "Renseignez d'abord le taux horaire et les heures par jour : ils transforment les heures en montants.",
       );
+    }
+
+    const rate = resolveSalaryRate(rates, month.year, month.month);
+    if (!rate) {
+      return rejectedResult("accountId", noSalaryRateMessage(month.year, month.month));
     }
 
     if (!account) {
@@ -550,7 +631,7 @@ export async function bookSalaryAction(values: unknown): Promise<ActionResult> {
 
     const range = monthRange(month.year, month.month);
     const workDays = await listWorkDays(user.id, { from: range.start, to: range.end });
-    const summary = computeSalarySummary(workDays, setting.hourlyRate);
+    const summary = computeSalarySummary(workDays, rate.hourlyRate);
 
     if (summary.totalAmount.isZero()) {
       return rejectedResult(
@@ -592,4 +673,403 @@ export async function bookSalaryAction(values: unknown): Promise<ActionResult> {
   revalidatePath("/budget");
   revalidatePath("/dashboard");
   return { status: "ok" };
+}
+
+/**
+ * Renames an account, or moves it between types.
+ *
+ * The currency may only change while the account holds no transaction: existing rows
+ * keep the currency they were written in and the app never converts, so changing it
+ * under history would make the account and its own past contradict each other. An
+ * archived account can still be renamed — restoring it is a separate tick.
+ */
+export async function updateAccountAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = accountUpdateSchema.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  const input = parsed.data;
+
+  try {
+    const account = await findManagedAccount(user.id, input.id);
+    if (!account) {
+      return rejectedResult("id", "Compte introuvable : il a peut-être été supprimé entre-temps.");
+    }
+
+    if (input.currency !== account.currency) {
+      const transactionCount = await countAccountTransactions(user.id, account.id);
+      if (transactionCount > 0) {
+        return rejectedResult(
+          "currency",
+          `Ce compte porte ${transactionCount} opération${transactionCount > 1 ? "s" : ""} en ${account.currency} : sa devise ne peut plus changer, aucune conversion n'est faite.`,
+        );
+      }
+    }
+
+    const updated = await updateAccount(user.id, input.id, {
+      name: input.name,
+      type: input.type,
+      currency: input.currency,
+    });
+
+    if (!updated) {
+      return rejectedResult("id", "Compte introuvable : il a peut-être été supprimé entre-temps.");
+    }
+  } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      return rejectedResult("name", "Un compte porte déjà ce nom.");
+    }
+
+    return unexpectedResult("updateAccount", error);
+  }
+
+  revalidatePath("/budget");
+  return { status: "ok" };
+}
+
+/**
+ * Archives or restores an account — never a deletion.
+ *
+ * An archived account disappears from the entry forms and from the alert engine, while
+ * its history stays readable and its transactions keep their dates. Restoring only
+ * clears the stamp.
+ */
+export async function setAccountArchivedAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = accountArchiveSchema.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  try {
+    const updated = await setAccountArchived(user.id, parsed.data.id, parsed.data.archived);
+    if (!updated) {
+      return rejectedResult("id", "Compte introuvable : il a peut-être été supprimé entre-temps.");
+    }
+  } catch (error) {
+    return unexpectedResult("setAccountArchived", error);
+  }
+
+  revalidatePath("/budget");
+  return {
+    status: "ok",
+    message: parsed.data.archived
+      ? "Compte archivé : il n'apparaît plus dans les formulaires de saisie, son historique reste lisible."
+      : "Compte réactivé : il réapparaît dans les formulaires de saisie.",
+  };
+}
+
+/**
+ * Renames a category, or moves it between kinds.
+ *
+ * The kind may only change while nothing references the category — a transaction, a
+ * budget or a recurring series. Its kind is what every report reads to decide which side
+ * of the ledger the row lands on; moving it under history would silently re-label the
+ * past, so the action refuses and points at merging instead.
+ */
+export async function updateCategoryAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = categoryUpdateSchema.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  const input = parsed.data;
+
+  try {
+    const category = await findCategory(user.id, input.id);
+    if (!category) {
+      return rejectedResult("id", "Catégorie introuvable : elle a peut-être été supprimée entre-temps.");
+    }
+
+    if (input.kind !== category.kind) {
+      const references = await countCategoryReferences(user.id, category.id);
+      const total = references.transactions + references.budgets + references.recurring;
+
+      if (total > 0) {
+        return rejectedResult(
+          "kind",
+          `Cette catégorie est utilisée (${references.transactions} opération${references.transactions > 1 ? "s" : ""}, ${references.budgets} budget${references.budgets > 1 ? "s" : ""}, ${references.recurring} série${references.recurring > 1 ? "s" : ""}) : son type ne peut pas changer sans déplacer son histoire du mauvais côté. Fusionnez-la plutôt vers une catégorie du bon type.`,
+        );
+      }
+    }
+
+    const updated = await updateCategory(user.id, input.id, {
+      name: input.name,
+      kind: input.kind,
+    });
+
+    if (!updated) {
+      return rejectedResult("id", "Catégorie introuvable : elle a peut-être été supprimée entre-temps.");
+    }
+  } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      return rejectedResult("name", "Une catégorie du même nom et du même type existe déjà.");
+    }
+
+    return unexpectedResult("updateCategory", error);
+  }
+
+  revalidatePath("/budget");
+  return { status: "ok" };
+}
+
+/**
+ * Merges one category into another of the same kind.
+ *
+ * Transactions and recurring series are repointed; budgets move where the target has no
+ * budget for the same month, and the duplicates are deleted — the target's plan already
+ * covers those periods, and the summary says how many were dropped, never silently. The
+ * two kinds must match: merging an expense into an income category would move history to
+ * the wrong side of every report.
+ */
+export async function mergeCategoriesAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = categoryMergeSchema.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  const input = parsed.data;
+
+  if (input.sourceId === input.targetId) {
+    return rejectedResult("targetId", "Choisissez une catégorie cible différente de la source.");
+  }
+
+  try {
+    const [source, target] = await Promise.all([
+      findCategory(user.id, input.sourceId),
+      findCategory(user.id, input.targetId),
+    ]);
+
+    if (!source) {
+      return rejectedResult("sourceId", "Catégorie source introuvable.");
+    }
+    if (!target) {
+      return rejectedResult("targetId", "Catégorie cible introuvable.");
+    }
+    if (source.kind !== target.kind) {
+      return rejectedResult(
+        "targetId",
+        "Les deux catégories doivent être du même type (recette ou dépense) : fusionner une dépense vers une recette déplacerait son histoire du mauvais côté.",
+      );
+    }
+
+    const summary = await mergeCategories(user.id, source.id, target.id);
+    if (!summary) {
+      return rejectedResult("sourceId", "Catégorie source introuvable : elle a peut-être déjà été fusionnée entre-temps.");
+    }
+
+    const parts: string[] = [];
+    if (summary.movedTransactions > 0) {
+      parts.push(`${summary.movedTransactions} opération${summary.movedTransactions > 1 ? "s" : ""}`);
+    }
+    if (summary.movedRecurring > 0) {
+      parts.push(`${summary.movedRecurring} série${summary.movedRecurring > 1 ? "s" : ""} récurrente${summary.movedRecurring > 1 ? "s" : ""}`);
+    }
+    if (summary.movedBudgets > 0) {
+      parts.push(`${summary.movedBudgets} budget${summary.movedBudgets > 1 ? "s" : ""}`);
+    }
+    if (summary.droppedBudgets > 0) {
+      parts.push(
+        `${summary.droppedBudgets} budget${summary.droppedBudgets > 1 ? "s" : ""} en doublon supprimé${summary.droppedBudgets > 1 ? "s" : ""} (« ${target.name} » couvrait déjà ces mois)`,
+      );
+    }
+
+    revalidatePath("/budget");
+    return {
+      status: "ok",
+      message:
+        parts.length === 0
+          ? `« ${source.name} » fusionnée dans « ${target.name} » : rien d'autre à déplacer.`
+          : `« ${source.name} » fusionnée dans « ${target.name} » : ${parts.join(", ")}.`,
+    };
+  } catch (error) {
+    return unexpectedResult("mergeCategories", error);
+  }
+}
+
+/**
+ * Deletes one category. Deliberately not a merge: the screen shows the usage counts
+ * first, because the schema rules are unforgiving — transactions lose their category
+ * (their amounts stay), and the category's budgets are deleted with it.
+ */
+export async function deleteCategoryAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = recordIdInput.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  try {
+    const deleted = await deleteCategory(user.id, parsed.data.id);
+    if (!deleted) {
+      return rejectedResult("id", "Catégorie introuvable : elle a peut-être déjà été supprimée.");
+    }
+  } catch (error) {
+    return unexpectedResult("deleteCategory", error);
+  }
+
+  revalidatePath("/budget");
+  return { status: "ok" };
+}
+
+/**
+ * Records an internal transfer as two linked movements, in one action.
+ *
+ * The amount is a positive magnitude and the direction comes from the two accounts; both
+ * must carry the same currency — the app never converts, so a linked transfer exists
+ * within one currency only. The two legs share a `transferGroupId` and are written in a
+ * single database transaction: either both exist or neither does. An empty label gets the
+ * default pair (« Virement vers … » / « Virement depuis … »), which reads well on both
+ * account statements.
+ */
+export async function createTransferAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = transferInputSchema.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  const input = parsed.data;
+
+  try {
+    const [from, to] = await Promise.all([
+      findAccount(user.id, input.fromAccountId),
+      findAccount(user.id, input.toAccountId),
+    ]);
+
+    if (!from) {
+      return rejectedResult("fromAccountId", "Compte source introuvable.");
+    }
+    if (!to) {
+      return rejectedResult("toAccountId", "Compte de destination introuvable.");
+    }
+
+    if (from.currency !== to.currency) {
+      return rejectedResult(
+        "toAccountId",
+        `Le compte source est en ${from.currency} et le compte de destination en ${to.currency} : un virement lié ne traverse pas les devises, aucune conversion n'est faite.`,
+      );
+    }
+
+    const labels = input.label
+      ? { source: input.label, destination: input.label }
+      : defaultTransferLabels(from.name, to.name);
+
+    await createTransferGroup({
+      userId: user.id,
+      fromAccountId: from.id,
+      toAccountId: to.id,
+      currency: from.currency,
+      amount: input.amount,
+      operationDate: input.operationDate,
+      sourceLabel: labels.source,
+      destinationLabel: labels.destination,
+      notes: input.notes,
+    });
+  } catch (error) {
+    return unexpectedResult("createTransfer", error);
+  }
+
+  revalidatePath("/budget");
+  revalidatePath("/dashboard");
+  return {
+    status: "ok",
+    message:
+      "Virement enregistré : les deux mouvements sont liés et se suppriment ensemble.",
+  };
+}
+
+/**
+ * Ticks or unticks one transaction against a bank statement.
+ *
+ * The tick only writes its own date: correcting the line stays the entry form's job.
+ * Each leg of a linked transfer is ticked from its own account's statement, so a leg is
+ * tickable like any other row.
+ */
+export async function setTransactionReconciledAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = reconciliationInputSchema.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  try {
+    const updated = await setTransactionReconciled({
+      userId: user.id,
+      transactionId: parsed.data.id,
+      reconciled: parsed.data.reconciled,
+    });
+
+    if (!updated) {
+      return rejectedResult("id", "Opération introuvable : elle a peut-être été supprimée entre-temps.");
+    }
+  } catch (error) {
+    return unexpectedResult("setTransactionReconciled", error);
+  }
+
+  revalidatePath("/budget");
+  return { status: "ok" };
+}
+
+/**
+ * Copies the previous month's budgets onto the month being displayed.
+ *
+ * Only genuinely missing envelopes are created: a row the owner already adjusted in the
+ * target month stays untouched, and the summary says how many were left alone. An empty
+ * source month is a plain answer, not an error.
+ */
+export async function copyBudgetsAction(values: unknown): Promise<ActionResult> {
+  const user = await requireUser();
+
+  const parsed = budgetCopySchema.safeParse(values);
+  if (!parsed.success) {
+    return invalidResult(parsed.error);
+  }
+
+  const target = parsed.data.month;
+
+  try {
+    const previousKey = shiftMonthKey(budgetMonthKey(target.year, target.month), -1);
+    const { year: previousYear, month: previousMonth } = parseMonthKey(previousKey);
+
+    const { created, skipped } = await copyBudgets({
+      userId: user.id,
+      from: { year: previousYear, month: previousMonth },
+      to: target,
+    });
+
+    revalidatePath("/budget");
+
+    if (created === 0 && skipped === 0) {
+      return {
+        status: "ok",
+        message: "Le mois précédent n'a aucun budget à copier. Créez-en d'abord un, il servira de modèle le mois prochain.",
+      };
+    }
+
+    if (created === 0) {
+      return {
+        status: "ok",
+        message: `Rien à copier : les ${skipped} budget${skipped > 1 ? "s" : ""} du mois précédent existent déjà ce mois-ci, dans leur version actuelle.`,
+      };
+    }
+
+    return {
+      status: "ok",
+      message: `${created} budget${created > 1 ? "s" : ""} copié${created > 1 ? "s" : ""} depuis ${formatMonthLabel(previousYear, previousMonth)}${skipped > 0 ? ` — ${skipped} déjà présent${skipped > 1 ? "s" : ""}, laissé${skipped > 1 ? "s" : ""} tel${skipped > 1 ? "s" : ""} quel${skipped > 1 ? "s" : ""}` : ""}.`,
+    };
+  } catch (error) {
+    return unexpectedResult("copyBudgets", error);
+  }
 }

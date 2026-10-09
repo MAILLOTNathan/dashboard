@@ -6,19 +6,23 @@ import {
   hoursPerDaySchema,
   monthCalendarCells,
   nextWorkDayState,
+  resolveSalaryRate,
   salaryBookingInputSchema,
   salaryBookingRef,
   salaryEquivalents,
+  salaryMonthContribution,
   salarySettingInputSchema,
   workDayHoursInputSchema,
   workDayInputSchema,
   type WorkDayRecord,
 } from "./salary";
+import { summariseForecastMonth } from "./recurrence";
 
 /** Fictitious values only. */
 
 describe("salarySettingInputSchema", () => {
   const validSetting = {
+    month: "2026-10",
     hourlyRate: "20,50",
     hoursPerDay: "7,5",
     currency: "EUR",
@@ -28,6 +32,7 @@ describe("salarySettingInputSchema", () => {
     const result = salarySettingInputSchema.safeParse(validSetting);
 
     expect(result.success).toBe(true);
+    expect(result.data?.month).toEqual({ year: 2026, month: 10 });
     expect(result.data?.hourlyRate.toFixed(2)).toBe("20.50");
     expect(result.data?.hoursPerDay.toFixed(2)).toBe("7.50");
   });
@@ -42,6 +47,15 @@ describe("salarySettingInputSchema", () => {
     expect(
       salarySettingInputSchema.safeParse({ ...validSetting, hourlyRate: "vingt" }).success,
     ).toBe(false);
+  });
+
+  it("refuses a month that does not exist, and a missing one", () => {
+    expect(
+      salarySettingInputSchema.safeParse({ ...validSetting, month: "2026-13" }).success,
+    ).toBe(false);
+    expect(salarySettingInputSchema.safeParse({ ...validSetting, month: "" }).success).toBe(
+      false,
+    );
   });
 
   it("refuses an unsupported currency", () => {
@@ -158,6 +172,133 @@ describe("salaryEquivalents", () => {
     expect(equivalents.daily.toFixed(2)).toBe("150.00");
     expect(equivalents.weekly.toFixed(2)).toBe("750.00");
     expect(equivalents.monthly.toFixed(2)).toBe("3250.00");
+  });
+});
+
+describe("resolveSalaryRate", () => {
+  const rate = (year: number, month: number, hourlyRate: string) => ({
+    year,
+    month,
+    hourlyRate: new Decimal(hourlyRate),
+  });
+
+  it("picks the exact month's change point", () => {
+    const rates = [rate(2026, 8, "20.50"), rate(2026, 12, "22.00")];
+
+    expect(resolveSalaryRate(rates, 2026, 12)?.hourlyRate.toFixed(2)).toBe("22.00");
+  });
+
+  it("keeps the previous rate until the next change point", () => {
+    const rates = [rate(2026, 8, "20.50"), rate(2027, 1, "22.00")];
+
+    expect(resolveSalaryRate(rates, 2026, 11)?.hourlyRate.toFixed(2)).toBe("20.50");
+    expect(resolveSalaryRate(rates, 2027, 3)?.hourlyRate.toFixed(2)).toBe("22.00");
+  });
+
+  it("has no rate before the first change point: absent, not a default", () => {
+    const rates = [rate(2026, 10, "20.50")];
+
+    expect(resolveSalaryRate(rates, 2026, 9)).toBeNull();
+    expect(resolveSalaryRate(rates, 2025, 12)).toBeNull();
+  });
+
+  it("does not depend on the order of the rows", () => {
+    const rates = [rate(2027, 1, "22.00"), rate(2026, 8, "20.50")];
+
+    expect(resolveSalaryRate(rates, 2026, 12)?.hourlyRate.toFixed(2)).toBe("20.50");
+  });
+
+  it("crosses the year boundary correctly", () => {
+    const rates = [rate(2026, 11, "20.50"), rate(2027, 2, "22.00")];
+
+    expect(resolveSalaryRate(rates, 2027, 1)?.hourlyRate.toFixed(2)).toBe("20.50");
+  });
+});
+
+describe("salaryMonthContribution", () => {
+  const rate = { hourlyRate: new Decimal("20.50"), currency: "EUR" as const };
+  const workDay = (
+    iso: string,
+    hours: string,
+    status: "PLANNED" | "WORKED" = "WORKED",
+  ): WorkDayRecord => ({
+    date: new Date(`${iso}T00:00:00.000Z`),
+    status,
+    hours: new Decimal(hours),
+  });
+
+  it("contributes the simulated total of clicked days as a pending income", () => {
+    const contribution = salaryMonthContribution({
+      rate,
+      days: [workDay("2026-11-04", "7.5"), workDay("2026-11-05", "8", "PLANNED")],
+      booking: null,
+    });
+
+    expect(contribution?.currency).toBe("EUR");
+    expect(contribution?.type).toBe("INCOME");
+    expect(contribution?.status).toBe("PENDING");
+    // 15,5 h × 20,50 €, planned and worked each counted once.
+    expect(contribution?.amount.toFixed(2)).toBe("317.75");
+  });
+
+  it("lets a registered month win over a later calendar edit", () => {
+    const contribution = salaryMonthContribution({
+      rate,
+      days: [workDay("2026-11-04", "7.5")],
+      booking: { amount: new Decimal("461.25"), currency: "EUR" },
+    });
+
+    expect(contribution?.status).toBe("CONFIRMED");
+    expect(contribution?.amount.toFixed(2)).toBe("461.25");
+  });
+
+  it("contributes a registered salary even without a rate or a clicked day", () => {
+    const contribution = salaryMonthContribution({
+      rate: null,
+      days: [],
+      // The booking's own currency is used, not the (missing) rate's.
+      booking: { amount: new Decimal("300.00"), currency: "USD" },
+    });
+
+    expect(contribution?.status).toBe("CONFIRMED");
+    expect(contribution?.currency).toBe("USD");
+  });
+
+  it("contributes nothing without a clicked day — never a zero salary", () => {
+    expect(salaryMonthContribution({ rate, days: [], booking: null })).toBeNull();
+  });
+
+  it("cannot simulate without a rate", () => {
+    expect(
+      salaryMonthContribution({
+        rate: null,
+        days: [workDay("2026-11-04", "7.5")],
+        booking: null,
+      }),
+    ).toBeNull();
+  });
+
+  it("feeds the month's prévisionnel as income", () => {
+    const salary = salaryMonthContribution({
+      rate,
+      days: [workDay("2026-11-04", "7.5")],
+      booking: null,
+    });
+    const totals = summariseForecastMonth([
+      {
+        currency: "EUR",
+        type: "EXPENSE",
+        amount: new Decimal("950.00"),
+        status: "PENDING",
+      },
+      ...(salary ? [salary] : []),
+    ]);
+
+    expect(totals).toHaveLength(1);
+    expect(totals[0]?.income.toFixed(2)).toBe("153.75");
+    expect(totals[0]?.expenses.toFixed(2)).toBe("950.00");
+    expect(totals[0]?.net.toFixed(2)).toBe("-796.25");
+    expect(totals[0]?.count).toBe(2);
   });
 });
 

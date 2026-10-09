@@ -62,6 +62,13 @@ export type SavingsThreshold = {
   progress: Decimal | null;
   /** threshold − balance, negative when the cushion exceeds the threshold; null when unknown. */
   shortfall: Decimal | null;
+  /**
+   * How many months of expected expenses the recorded balance covers, one decimal,
+   * half-up. `balance × 6 ÷ threshold`, so "6,0" means the full cushion is there. A
+   * non-positive balance reads 0 — the debt is told by the amount. Null when the
+   * balance is unknown.
+   */
+  runwayMonths: Decimal | null;
 };
 
 /**
@@ -169,6 +176,16 @@ export function buildSavingsThresholds(input: {
               .times(100)
               .toDecimalPlaces(1, Decimal.ROUND_HALF_UP);
 
+    const runwayMonths =
+      savingsBalance === null
+        ? null
+        : savingsBalance.lessThanOrEqualTo(0)
+          ? new Decimal(0)
+          : savingsBalance
+              .times(SAVINGS_THRESHOLD_MONTHS)
+              .dividedBy(expectedTotal)
+              .toDecimalPlaces(1, Decimal.ROUND_HALF_UP);
+
     return {
       currency,
       months,
@@ -179,6 +196,7 @@ export function buildSavingsThresholds(input: {
       savingsBalance,
       progress,
       shortfall: savingsBalance === null ? null : expectedTotal.minus(savingsBalance),
+      runwayMonths,
     } satisfies SavingsThreshold;
   });
 }

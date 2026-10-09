@@ -26,7 +26,7 @@ read-only; personal and company data are not mixed.
 
 ```text
 src/
-  app/(app)/         authenticated pages: account, alerts, budget, dashboard, integrations, real-estate
+  app/(app)/         authenticated pages: account, alerts, budget (incl. /budget/import), dashboard, integrations, real-estate
   app/api/           Route Handlers: auth callbacks + CSV export (401 JSON, never a redirect)
   app/login/         sign-in page
   components/        shared UI (forms, server-rendered SVG charts, navigation)
@@ -43,26 +43,41 @@ docs/                architecture/overview.md, decisions/
 ## Data model (`prisma/schema.prisma`)
 
 `User` (sole owner) owns `Account`, `Category`, `Transaction`, `Budget`,
-`RecurringEntry`, `Goal`, `SalarySetting`, `WorkDay`, `Property`,
+`RecurringEntry`, `Goal`, `SalarySetting`, `SalaryRate`, `WorkDay`, `Property`,
 `IntegrationConnection`, `Alert`, `AlertRule`. Key rules:
 
 - `Transaction.amount` is `Decimal(18, 2)`, signed (negative = outflow); never floats.
 - `Transaction.operationDate` is `DATE`; instants are `timestamptz(3)` UTC.
+- `Transaction.transferGroupId` links the two legs of one internal transfer (source
+  negative, destination positive, written in a single database transaction, same
+  currency); deleting either leg deletes the group, editing one leg alone is refused.
+- `Transaction.reconciledAt` (DATE?) is the day the line was checked against a bank
+  statement; empty = not checked yet (a state, not a missing value).
 - `Budget.amount` is `Decimal(18, 2)` and always positive (a planned magnitude);
   one row per `(userId, categoryId, year, month, currency)` unique tuple.
-- `SalarySetting` (one per owner: hourly rate, default hours per day, currency) and
+- `SalarySetting` (one per owner: default hours per day, currency — global options) and
+  `SalaryRate` (one per owner and month: the hourly rate as a change point, effective
+  from that month until the next entry; a month before the first entry has no rate) plus
   `WorkDay` (one per owner and date: `PLANNED`/`WORKED` + hours) power the salary
   simulator; its booking button writes one INCOME transaction per month (`externalRef`
   `salary:YYYY-MM`, category « Salaire », seeded as a default category).
 - `Goal` is a target amount in one currency with a target date and a status; its current
-  amount comes from **either** a manual `currentAmount` **or** a linked `accountId`
-  (mutually exclusive, enforced by the action): the linked form reads the signed sum of
-  the account's transactions, and missing data reads "unknown", never zero. Linking is
-  owner-scoped and same-currency — no conversion is ever applied.
+  amount comes from a linked `accountId` **or** a manual `currentAmount` (mutually
+  exclusive, enforced by the action). A manual goal's progress is its starting amount
+  plus the sum of its `GoalContribution` rows — dated log entries (amount, date, note),
+  never ledger transactions — and missing data reads "unknown", never zero. Linking is
+  owner-scoped and same-currency; linked goals take no contributions. No conversion is
+  ever applied.
+- `RecurringEntry.frequency` is `MONTHLY` / `QUARTERLY` / `YEARLY` (counted from the
+  start month). Editing a series is allowed; moving its cadence or start date clears the
+  pending occurrences so they are rebuilt, and the start date is locked once a decision
+  exists.
 - `Alert` stores one episode per watched condition: `fingerprint` (unique with the
   owner), `status` (ACTIVE / DISMISSED / RESOLVED), and `inputs` as `Json` — message
   inputs only, never the displayed sentence. `AlertRule` holds one configuration per
   kind (enabled, one of thresholdAmount/thresholdCurrency/thresholdPercent/thresholdDays).
+  `BUDGET_THRESHOLD` is the preventive rule before `BUDGET_OVERRUN` (fires below 100 % of
+  the envelope, resolves when the overrun takes over).
 - `PropertyCashflow` carries **either** a typed `amount` **or** a `transactionId`
   (mutually exclusive, link unique): no double counting in property totals.
 - `IntegrationConnection.credentialsCiphertext` holds the AES-256-GCM token; it is
@@ -136,38 +151,60 @@ http://dashboard.localhost:8888 (the proxy belongs to the `full` profile).
 - Auth + `/account`: password change with server-enforced rules (min 12 chars,
   max 72 bytes); a change signs out every session (the token carries a password
   fingerprint).
-- Budget: accounts, categories, transactions (create; edit reopens the row in the
-  form via `?edit=<id>`; delete with a confirmation step); filters; monthly totals
-  per currency; two server-rendered SVG charts (12-month trend, category breakdown)
-  that always print exact figures; CSV export at `/api/export/transactions`
-  (`no-store`, formula neutralisation, bounded by `EXPORT_ROW_LIMIT`); monthly
+- Budget: accounts, categories, transactions (create; edit **in place** on the
+  operations table — Enter saves, Escape cancels, notes stay in the full
+  `?edit=<id>` form — duplicate via `?copy=<id>`, delete with a confirmation step;
+  a linked-transfer leg is not editable and deletes its group), filters (account,
+  category, type, text, reconciliation, and an all-months scope), sortable columns,
+  pagination, monthly totals per currency; two server-rendered SVG charts (12-month
+  trend, category breakdown) that always print exact figures; a period comparison
+  (previous month, same month last year, per currency and per category; hidden rather
+  than partial when a read is truncated); a manual CSV import page
+  (`/budget/import`: parsed in the browser, dedicated Server Action with
+  debit/credit pair, duplicate detection, `import:` references, 2 000-row bound);
+  CSV export at `/api/export/transactions` (month, `?year=`, `?all=1`; `no-store`,
+  formula neutralisation, bounded by `EXPORT_ROW_LIMIT`); monthly
   budgets per category and currency (create, edit
   via `?editBudget=<id>`, delete with a confirmation step — a positive planned
-  amount, duplicates rejected, currencies never converted). The page is split into
-  seven tabs selected by `?tab=` — Opérations (entry, filters, month list), Analyse
-  (indicators, charts), Budgets, Suivi (planned vs actual per category and currency,
+  amount, duplicates rejected, currencies never converted; a "copy last month"
+  button and rolling 3-month averages as display-only suggestions). The page is split into
+  eight tabs selected by `?tab=` — Opérations (entry, filters, month list), Analyse
+  (indicators, charts, period comparison), Budgets, Suivi (planned vs actual per category and currency,
   with per-currency totals for expenses and income under the table: operation dates
   only, refunds reduce their category, transfers and uncategorised lines excluded, no
-  conversion), Prévisions (recurring series of expected income or expenses: one
-  occurrence per month, materialised idempotently; confirming creates the transaction
-  through the manual path, passing or discarding writes an auditable decision and no
-  transaction, nothing counts in a total before a confirmation — plus the month's
+  conversion), Prévisions (recurring series of expected income or expenses — monthly,
+  quarterly or yearly: occurrences materialised idempotently; confirming creates the
+  transaction through the manual path, passing or discarding writes an auditable
+  decision and no transaction, nothing counts in a total before a confirmation; series
+  are editable, with the start date locked once a decision exists — plus the month's
   salary prévision, computed from the simulator, shown as the first row of the
   échéances table (registration form in the row; once recorded, listed among the
   month's decisions) and recorded through the same booking as the Salaire tab, plus
-  per-currency prévisionnel totals above the list — expected income, expenses and net,
-  confirmed included, passed/dismissed excluded), Objectifs (savings or repayment
-  targets: current amount from a manual entry or a linked account's recorded balance,
-  progress as amount + percentage, remaining, and a monthly contribution rounded
+  per-currency prévisionnel totals above the list, and a 6-month scheduler below it,
+  computed from the calendar and completed with each month's salary — simulated from
+  its clicked days, or the booked amount; a month with no clicked day shows none — and
+  its per-currency simulated end-of-month balance (recorded cumulative before the
+  window, advanced by recorded operations and pending movements, each counted once;
+  « — » when the currency has no recorded operation), while the simulator's amounts
+  stay absent from every actual total), Objectifs (savings or repayment
+  targets: current amount from a linked account's recorded balance or a manual starting
+  amount plus a dated contribution log, progress as amount + percentage, remaining, and a monthly contribution rounded
   half-up on cents — undefined after the deadline or once reached, and an unknown
   source always reads as "unknown", never as zero; above the table, a computed
   **savings threshold**: six months of expected expenses from the recurring series
   (current month + 5, per currency, never stored), compared to the recorded balance of
-  the accounts typed SAVINGS — an unrecorded account stays unknown) and Salaire (hourly-rate simulator:
+  the accounts typed SAVINGS — an unrecorded account stays unknown, and a runway in
+  months is shown next to it), Salaire (hourly-rate simulator: the rate is a change
+  point, set per month and effective from it until the next entry — a month with no
+  rate at all keeps its calendar and booking refused;
   one click plans a day, a second marks it worked, a third clears it; a booking button
   records the month's simulated amount — planned and worked days, each once — as one
-  INCOME in the default « Salaire » category) — each tab reading only its own data;
-  `?edit=`/`?editBudget=`/`?editGoal=` links land on their tab.
+  INCOME in the default « Salaire » category) and Comptes (balances, projected
+  end-of-month balance per account — recorded balance + pending occurrences, never the
+  simulated salary — account rename/retype/currency-while-empty/archive/restore, and
+  category rename/merge/delete with usage counts shown first) — each tab reading only
+  its own data; `?edit=`/`?editBudget=`/`?editGoal=`/`?editRecurring=` links land on
+  their tab.
 - Real estate: properties (explicit occupancy — not all rented), cashflow entries
   (amount XOR transaction link), totals, due dates, notes.
 - Integrations: read-only GitHub (projects, open issues + PRs, explorer with
@@ -175,7 +212,9 @@ http://dashboard.localhost:8888 (the proxy belongs to the `full` profile).
   manual idempotent sync (`src/jobs/sync.ts`), fetch bounded on purpose. GitLab is
   limited to project metadata by policy.
 - Alerts (`/alerts`, « Alertes » in the nav): deterministic rules only (low balance,
-  budget overrun, unusual expense, stale integration, overdue cashflow), evaluated
+  budget overrun, budget threshold — the preventive one, below 100 % of an envelope,
+  resolved the moment the overrun takes over — unusual expense, stale integration,
+  overdue cashflow), evaluated
   server-side on demand by one bounded pass that the dashboard and the alert page run
   while rendering. Alerts never write to the ledger; each row stores message **inputs**
   (strings), and the French reason is recomputed by `describeAlert`. Fingerprint
@@ -194,11 +233,13 @@ http://dashboard.localhost:8888 (the proxy belongs to the `full` profile).
 
 ## Not implemented (do not assume they exist)
 
-- No editable grid; accounts, categories and properties cannot be edited or deleted
-  yet (only transactions can be deleted).
 - No scheduler/cron for sync — the function exists, only the manual trigger ships.
+- Properties and cashflow entries cannot be edited or deleted from the interface yet.
+  Accounts (rename/retype/archive/restore), categories (rename/merge/delete) and
+  recurring series (edit) are managed in the « Comptes » tab of `/budget`.
 - No bank connector, no payment/accounting/tax advice, no writing to GitHub or
-  GitLab, no document storage, no AI features. Out of scope by design.
+  GitLab, no document storage, no AI features. Out of scope by design. The CSV
+  import is manual and deliberate.
 
 ## Gotchas verified in this repo
 

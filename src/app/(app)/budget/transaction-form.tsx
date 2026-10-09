@@ -55,6 +55,7 @@ export function TransactionForm({
   labelSuggestions,
   today,
   editing = null,
+  duplicateOf = null,
   linkedPropertyName = null,
   cancelHref,
 }: {
@@ -68,6 +69,12 @@ export function TransactionForm({
    * or a `Date` cannot cross into this component at all.
    */
   editing?: TransactionFormInitialValues | null;
+  /**
+   * The row being duplicated: the creation form is seeded with its values (date
+   * included), and nothing is written until the owner submits. Mutually exclusive with
+   * `editing` — the server never sets both.
+   */
+  duplicateOf?: TransactionFormInitialValues | null;
   /** Property whose cashflow reads this transaction, when there is one. */
   linkedPropertyName?: string | null;
   /** Where "Annuler" returns to, filters preserved. Used while editing. */
@@ -87,15 +94,27 @@ export function TransactionForm({
           operationDate: editing.operationDate,
           notes: editing.notes,
         }
-      : {
-          accountId: accounts[0]?.id ?? "",
-          categoryId: "",
-          type: "EXPENSE",
-          label: "",
-          amount: "",
-          operationDate: today,
-          notes: "",
-        },
+      : duplicateOf
+        ? {
+            accountId: duplicateOf.accountId,
+            categoryId: duplicateOf.categoryId,
+            type: duplicateOf.type,
+            label: duplicateOf.label,
+            amount: duplicateOf.amount,
+            // The date is copied too: a duplicated line is usually the same day's
+            // story again (a split, a corrected repeat), and the notice asks to check.
+            operationDate: duplicateOf.operationDate,
+            notes: duplicateOf.notes,
+          }
+        : {
+            accountId: accounts[0]?.id ?? "",
+            categoryId: "",
+            type: "EXPENSE",
+            label: "",
+            amount: "",
+            operationDate: today,
+            notes: "",
+          },
   });
 
   // The identifier is added here rather than kept in a hidden field: the form values stay
@@ -162,6 +181,15 @@ export function TransactionForm({
 
   return (
     <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" noValidate>
+      {duplicateOf && !isEditing ? (
+        <div className="sm:col-span-2 lg:col-span-3">
+          <Notice tone="info">
+            Copie de « {duplicateOf.label} » : les valeurs sont préremplies, date comprise.
+            Rien n&apos;est enregistré tant que vous ne validez pas.
+          </Notice>
+        </div>
+      ) : null}
+
       {linkedPropertyName ? (
         <div className="sm:col-span-2 lg:col-span-3">
           <Notice tone="warning">

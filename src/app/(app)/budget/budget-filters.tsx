@@ -20,6 +20,8 @@ export type BudgetFilterValues = {
   categoryId?: string;
   type?: TransactionType;
   search?: string;
+  /** `true` = only reconciled rows, `false` = only unchecked ones, absent = all. */
+  reconciled?: boolean;
 };
 
 const fieldClass =
@@ -38,6 +40,8 @@ export function BudgetFilters({
   accounts,
   categories,
   values,
+  showAllScope = false,
+  allScope = false,
 }: {
   tab: BudgetTab;
   /** `YYYY-MM`, the month currently displayed. */
@@ -45,6 +49,9 @@ export function BudgetFilters({
   accounts: AccountSummary[];
   categories: CategorySummary[];
   values: BudgetFilterValues;
+  /** Only the operations tab can widen the search to every month. */
+  showAllScope?: boolean;
+  allScope?: boolean;
 }) {
   return (
     <Card title="Filtres">
@@ -99,6 +106,28 @@ export function BudgetFilters({
             ))}
           </select>
         </label>
+
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="font-medium">Pointage</span>
+          <select
+            name="reconciled"
+            defaultValue={
+              values.reconciled === undefined ? "" : values.reconciled ? "1" : "0"
+            }
+            className={fieldClass}
+          >
+            <option value="">Toutes</option>
+            <option value="0">Non pointées</option>
+            <option value="1">Pointées</option>
+          </select>
+        </label>
+
+        {showAllScope ? (
+          <label className="flex items-center gap-2 pb-1.5 text-sm">
+            <input type="checkbox" name="all" value="1" defaultChecked={allScope} />
+            Chercher dans tous les mois
+          </label>
+        ) : null}
 
         <label className="flex flex-1 flex-col gap-1 text-sm">
           <span className="font-medium">Libellé contient</span>

@@ -39,6 +39,8 @@ const EXPENSE = {
   categoryName: "Courses",
   notes: null,
   externalRef: null,
+  transferGroupId: null,
+  reconciledAt: null,
   createdAt: new Date(Date.UTC(2026, 8, 3, 8, 0)),
 };
 
@@ -107,11 +109,69 @@ describe("GET /api/export/transactions", () => {
     );
 
     expect(lines[0]).toBe(
-      "date_operation,libelle,compte,categorie,type,montant,devise,notes,reference_source",
+      "date_operation,libelle,compte,categorie,type,montant,devise,pointe_le,notes,reference_source",
     );
     expect(lines[1]).toBe(
-      "2026-09-03,Courses alimentaires,Compte courant,Courses,EXPENSE,-350.00,EUR,,",
+      "2026-09-03,Courses alimentaires,Compte courant,Courses,EXPENSE,-350.00,EUR,,,",
     );
+  });
+
+  it("writes the reconciliation day when the line was checked", async () => {
+    listTransactionsMock.mockResolvedValue([
+      { ...EXPENSE, reconciledAt: new Date(Date.UTC(2026, 9, 7)) },
+    ]);
+
+    const lines = await bodyOf(
+      await GET(new Request("http://test.local/api/export/transactions?month=2026-09")),
+    );
+
+    expect(lines[1]).toContain(",2026-10-07,");
+  });
+
+  it("exports a whole year when asked, with an exclusive end and its own file name", async () => {
+    const response = await GET(
+      new Request("http://test.local/api/export/transactions?year=2026"),
+    );
+
+    const options = listTransactionsMock.mock.calls.at(-1)?.[1] as { from: Date; to: Date };
+    expect(options.from.toISOString()).toBe("2026-01-01T00:00:00.000Z");
+    expect(options.to.toISOString()).toBe("2027-01-01T00:00:00.000Z");
+    expect(response.headers.get("Content-Disposition")).toBe(
+      'attachment; filename="transactions-2026.csv"',
+    );
+  });
+
+  it("exports every month when all=1, and falls back to the month otherwise", async () => {
+    const response = await GET(
+      new Request("http://test.local/api/export/transactions?all=1"),
+    );
+
+    const options = listTransactionsMock.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect(options.from).toBeUndefined();
+    expect(options.to).toBeUndefined();
+    expect(response.headers.get("Content-Disposition")).toBe(
+      'attachment; filename="transactions-complet.csv"',
+    );
+
+    // A malformed year falls back to the current month rather than 500 or an empty file.
+    await GET(new Request("http://test.local/api/export/transactions?year=26"));
+    const fallback = listTransactionsMock.mock.calls.at(-1)?.[1] as { from: Date };
+    expect(fallback.from.toISOString()).toBe("2026-10-01T00:00:00.000Z");
+  });
+
+  it("forwards the reconciliation filter", async () => {
+    await GET(
+      new Request("http://test.local/api/export/transactions?month=2026-09&reconciled=0"),
+    );
+
+    const options = listTransactionsMock.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect(options.reconciled).toBe(false);
+
+    await GET(
+      new Request("http://test.local/api/export/transactions?month=2026-09&reconciled=1"),
+    );
+    const checked = listTransactionsMock.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect(checked.reconciled).toBe(true);
   });
 
   it("forwards the account, category, type and search filters", async () => {

@@ -17,6 +17,7 @@ export const BUDGET_TABS = [
   { id: "forecast", label: "Prévisions" },
   { id: "goals", label: "Objectifs" },
   { id: "salary", label: "Salaire" },
+  { id: "accounts", label: "Comptes" },
 ] as const;
 
 export type BudgetTab = (typeof BUDGET_TABS)[number]["id"];
@@ -31,7 +32,7 @@ export type BudgetTab = (typeof BUDGET_TABS)[number]["id"];
  */
 export function resolveBudgetTab(
   requested: string | undefined,
-  options: { editBudgetId?: string; editGoalId?: string } = {},
+  options: { editBudgetId?: string; editGoalId?: string; editRecurringId?: string } = {},
 ): BudgetTab {
   const explicit = BUDGET_TABS.find((tab) => tab.id === requested);
   if (explicit) {
@@ -40,6 +41,10 @@ export function resolveBudgetTab(
 
   if (options.editBudgetId) {
     return "budgets";
+  }
+
+  if (options.editRecurringId) {
+    return "forecast";
   }
 
   return options.editGoalId ? "goals" : "operations";

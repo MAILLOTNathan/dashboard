@@ -8,10 +8,13 @@ import {
   isValidMonthKey,
   isValidTimeZone,
   monthKeysEndingAt,
+  monthKeysFrom,
   monthRange,
   parseDateOnly,
   parseMonthKey,
+  shiftMonthKey,
   toDateOnlyString,
+  yearRange,
 } from "./dates";
 
 describe("isValidMonthKey", () => {
@@ -178,5 +181,49 @@ describe("formatShortMonthLabel", () => {
 
     expect(label).toMatch(/oct/i);
     expect(label).toContain("25");
+  });
+});
+
+describe("shiftMonthKey", () => {
+  it("shifts forward and backward, crossing the year both ways", () => {
+    expect(shiftMonthKey("2026-10", 1)).toBe("2026-11");
+    expect(shiftMonthKey("2026-10", -1)).toBe("2026-09");
+    expect(shiftMonthKey("2026-12", 1)).toBe("2027-01");
+    expect(shiftMonthKey("2026-01", -1)).toBe("2025-12");
+    expect(shiftMonthKey("2026-01", -13)).toBe("2024-12");
+  });
+
+  it("a zero shift keeps the same month", () => {
+    expect(shiftMonthKey("2026-10", 0)).toBe("2026-10");
+  });
+
+  it("rejects a non-integer offset or an out-of-bounds result", () => {
+    expect(() => shiftMonthKey("2026-10", 1.5)).toThrow(RangeError);
+    expect(() => shiftMonthKey("0001-01", -1)).toThrow(RangeError);
+  });
+});
+
+describe("monthKeysFrom", () => {
+  it("lists the requested count starting at the given month", () => {
+    expect(monthKeysFrom("2026-11", 3)).toEqual(["2026-11", "2026-12", "2027-01"]);
+    expect(monthKeysFrom("2026-10", 1)).toEqual(["2026-10"]);
+  });
+
+  it("rejects a window that does not make sense", () => {
+    expect(() => monthKeysFrom("2026-10", 0)).toThrow(RangeError);
+    expect(() => monthKeysFrom("2026-10", 2.5)).toThrow(RangeError);
+  });
+});
+
+describe("yearRange", () => {
+  it("spans the whole year with an exclusive end", () => {
+    const range = yearRange(2026);
+
+    expect(toDateOnlyString(range.start)).toBe("2026-01-01");
+    expect(toDateOnlyString(range.end)).toBe("2027-01-01");
+  });
+
+  it("validates the year through the month bounds", () => {
+    expect(() => yearRange(1969)).toThrow(RangeError);
   });
 });

@@ -77,10 +77,13 @@ enum WorkDayStatus {
   WORKED
 }
 
-/// How often a recurring definition occurs. Only `MONTHLY` is offered today:
-/// the column exists so another cadence would be a migration, not a redesign.
+/// How often a recurring definition occurs. Quarterly and yearly cover the series
+/// that are not monthly (taxes, insurance, quarterly rents); a cadence that is not
+/// a whole number of months is deliberately not offered.
 enum RecurrenceFrequency {
   MONTHLY
+  QUARTERLY
+  YEARLY
 }
 
 /// The lifecycle of one materialised occurrence. A decision is terminal — no state
@@ -106,6 +109,7 @@ enum GoalStatus {
 enum AlertKind {
   LOW_BALANCE
   BUDGET_OVERRUN
+  BUDGET_THRESHOLD
   UNUSUAL_EXPENSE
   STALE_INTEGRATION
   OVERDUE_EVENT
@@ -141,10 +145,12 @@ model User {
   transactions Transaction[]
   budgets     Budget[]
   salarySetting SalarySetting?
+  salaryRates SalaryRate[]
   workDays    WorkDay[]
   recurringEntries RecurringEntry[]
   recurringOccurrences RecurringOccurrence[]
   goals       Goal[]
+  goalContributions GoalContribution[]
   properties  Property[]
   connections IntegrationConnection[]
   alerts      Alert[]
@@ -203,6 +209,15 @@ model Transaction {
   notes    String?
   /// Stable identifier of the source record, used to make imports re-runnable.
   externalRef String?
+  /// Shared by the two movements of an internal transfer created in one action;
+  /// `null` for every single-leg entry, including a transfer typed by hand. Both
+  /// legs keep their own account's currency: a linked transfer only exists within
+  /// one currency, the app never converts.
+  transferGroupId String?
+  /// Day the line was checked against a bank statement. `null` means "not checked
+  /// yet" — a normal state, never an error — and ticking never changes the amount,
+  /// the date or the account.
+  reconciledAt DateTime?   @db.Date
   createdAt DateTime      @default(now()) @db.Timestamptz(3)
   updatedAt DateTime      @updatedAt @db.Timestamptz(3)
 
@@ -242,14 +257,11 @@ model Budget {
   @@index([userId, year, month])
 }
 
-/// The owner's wage, reduced to the one unit the simulation needs: an exact hourly
-/// rate. Weekly and monthly amounts are only derived figures shown next to it (see
-/// `salaryEquivalents`), never stored in those units.
+/// The simulator's options, common to every month: the default length of a plannable
+/// day and the currency. The hourly rate itself is month-scoped (see `SalaryRate`).
 model SalarySetting {
   id         String   @id @default(cuid())
   userId     String   @unique
-  /// Exact hourly rate, in `currency`.
-  hourlyRate Decimal  @db.Decimal(18, 2)
   /// Default length of a plannable day, in hours. Applies to future clicks only.
   hoursPerDay Decimal @db.Decimal(4, 2)
   currency   String   @default("EUR") @db.Char(3)
@@ -257,6 +269,25 @@ model SalarySetting {
   updatedAt  DateTime @updatedAt @db.Timestamptz(3)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// One hourly-rate change point: the rate applies **from this month on**, until the next
+/// entry. Resolving a month means reading the most recent entry at or before it, like an
+/// effective-dated wage; a month before the first entry has no rate at all (its
+/// simulation is unavailable rather than computed from an invented default).
+model SalaryRate {
+  id         String   @id @default(cuid())
+  userId     String
+  year       Int
+  month      Int
+  /// Exact hourly rate, in the simulator's currency.
+  hourlyRate Decimal  @db.Decimal(18, 2)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, year, month])
 }
 
 /// One clicked day of the salary calendar. The status is the level the owner reached:
@@ -341,11 +372,13 @@ model RecurringOccurrence {
 /// A savings or repayment goal: a target amount in one currency, to be set aside (or
 /// repaid) by a target date.
 ///
-/// The current amount comes from exactly one source — a manual amount, or the recorded
-/// balance of a linked account (`currentAmount` and `accountId` are mutually exclusive,
-/// enforced by the input contract). With neither, progress is *unknown* and is read as
-/// unknown, never as zero. A linked account must carry the goal's currency: no
-/// conversion ever happens.
+/// The current amount comes from one of two sources — the recorded balance of a linked
+/// account, or a manual amount (`currentAmount` and `accountId` are mutually exclusive,
+/// enforced by the input contract). Logged contributions (see `GoalContribution`) add
+/// to the manual amount: starting amount + everything set aside since. With neither a
+/// manual amount nor a contribution, progress is *unknown* and is read as unknown,
+/// never as zero. A linked account must carry the goal's currency and takes no
+/// contributions: no conversion ever happens.
 model Goal {
   id           String     @id @default(cuid())
   userId       String
@@ -360,10 +393,35 @@ model Goal {
   createdAt    DateTime   @default(now()) @db.Timestamptz(3)
   updatedAt    DateTime   @updatedAt @db.Timestamptz(3)
 
-  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  account Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account       Account?           @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  contributions GoalContribution[]
 
   @@index([userId])
+}
+
+/// One amount set aside (or repaid) for a goal on a given day.
+///
+/// A contribution is a **log entry**, not a ledger transaction: it never touches an
+/// account balance and carries its own date, so progress over time stays readable.
+/// Only manual goals accept contributions — a goal linked to an account reads that
+/// account's balance and takes no contributions. `amount` is a positive magnitude in
+/// the goal's currency, like a budget amount.
+model GoalContribution {
+  id     String   @id @default(cuid())
+  userId String
+  goalId String
+  /// Positive magnitude, in the goal's currency.
+  amount Decimal  @db.Decimal(18, 2)
+  /// Day the amount was set aside, a `DATE` like every operation date.
+  date   DateTime @db.Date
+  note   String?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  goal Goal @relation(fields: [goalId], references: [id], onDelete: Cascade)
+
+  @@index([userId, goalId, date])
 }
 
 model Property {

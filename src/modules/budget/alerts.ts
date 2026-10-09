@@ -4,6 +4,7 @@ import type { Currency } from "@/lib/money";
 import type { AlertCandidate, AlertRuleConfig } from "@/modules/alerts/domain";
 import {
   budgetOverrunFingerprint,
+  budgetThresholdFingerprint,
   lowBalanceFingerprint,
   unusualExpenseFingerprint,
 } from "@/modules/alerts/domain";
@@ -11,10 +12,11 @@ import type { TransactionRecord } from "./domain";
 import type { BudgetReportRow } from "./report";
 
 /**
- * Budget-side alert rules (BP-05): low balance, budget overrun, unusual expense.
+ * Budget-side alert rules (BP-05): low balance, budget overrun, budget threshold, unusual
+ * expense.
  *
  * Each function is pure — inputs in, candidates out, no clock hidden inside — so the
- * whole rule set is unit-tested with fixed dates. Two principles run through all three:
+ * whole rule set is unit-tested with fixed dates. Two principles run through all of them:
  *
  * - **missing data is not a zero**: an account with no recorded transaction, or a month
  *   whose transactions could not be read in full, produces no alert at all;
@@ -139,6 +141,70 @@ export function evaluateBudgetOverrun(
         actual: row.actual.toFixed(2),
         overrun: overrun.toFixed(2),
         overrunPercent: percent.toFixed(1),
+      },
+    });
+  }
+
+  return candidates;
+}
+
+/**
+ * Budget threshold: a spending envelope has reached the configured percentage of its
+ * planned amount **without being exceeded yet**.
+ *
+ * This is the preventive companion of `evaluateBudgetOverrun`, never a second voice on
+ * the same situation: the condition requires the overrun to be zero or negative, so at
+ * exactly 100 % the threshold episode still runs, and the first euro over the plan
+ * resolves it while the overrun alert opens. The margin is the configured percentage of
+ * the planned amount; a month whose transactions were only read in part stays quiet,
+ * like the overrun rule.
+ */
+export function evaluateBudgetThreshold(
+  rows: readonly BudgetReportRow[],
+  rule: AlertRuleConfig,
+  options: { monthKey: string; truncated?: boolean },
+): AlertCandidate[] {
+  if (!rule.enabled || options.truncated) {
+    return [];
+  }
+
+  const thresholdPercent = rule.thresholdPercent ?? new Decimal(0);
+  const candidates: AlertCandidate[] = [];
+
+  for (const row of rows) {
+    if (row.categoryKind !== "EXPENSE") {
+      continue;
+    }
+
+    // Only a not-exceeded envelope qualifies; an exceeded one belongs to the overrun rule.
+    const overrun = row.actual.minus(row.planned);
+    if (overrun.greaterThan(0)) {
+      continue;
+    }
+
+    if (!row.planned.greaterThan(0)) {
+      continue;
+    }
+
+    const exactPercent = row.actual.dividedBy(row.planned).times(100);
+
+    // A negative actual (more refunds than spending) never reaches a positive threshold.
+    if (exactPercent.lessThan(thresholdPercent) || exactPercent.lessThanOrEqualTo(0)) {
+      continue;
+    }
+
+    candidates.push({
+      kind: "BUDGET_THRESHOLD",
+      fingerprint: budgetThresholdFingerprint(row.categoryId, row.currency, options.monthKey),
+      inputs: {
+        categoryId: row.categoryId,
+        categoryName: row.categoryName,
+        currency: row.currency,
+        month: options.monthKey,
+        planned: row.planned.toFixed(2),
+        actual: row.actual.toFixed(2),
+        percent: exactPercent.toDecimalPlaces(1, Decimal.ROUND_HALF_UP).toFixed(1),
+        thresholdPercent: thresholdPercent.toString(),
       },
     });
   }

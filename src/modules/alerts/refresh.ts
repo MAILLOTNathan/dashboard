@@ -2,6 +2,7 @@ import Decimal from "decimal.js";
 import { currentMonthKey, monthRange, parseMonthKey } from "@/lib/dates";
 import {
   evaluateBudgetOverrun,
+  evaluateBudgetThreshold,
   evaluateLowBalance,
   evaluateUnusualExpense,
 } from "@/modules/budget/alerts";
@@ -79,12 +80,14 @@ export async function refreshAlerts(
     balance: byAccount.get(account.id)?.balance ?? new Decimal(0),
   }));
 
+  // One report for both budget rules, so overrun and threshold can never disagree.
+  const reportRows = buildBudgetReport(budgets, monthSeries.transactions);
+  const budgetRuleOptions = { monthKey, truncated: monthSeries.truncated };
+
   const candidates = [
     ...evaluateLowBalance(accountBalances, ruleFor("LOW_BALANCE")),
-    ...evaluateBudgetOverrun(buildBudgetReport(budgets, monthSeries.transactions), ruleFor("BUDGET_OVERRUN"), {
-      monthKey,
-      truncated: monthSeries.truncated,
-    }),
+    ...evaluateBudgetOverrun(reportRows, ruleFor("BUDGET_OVERRUN"), budgetRuleOptions),
+    ...evaluateBudgetThreshold(reportRows, ruleFor("BUDGET_THRESHOLD"), budgetRuleOptions),
     ...evaluateUnusualExpense(monthSeries.transactions, ruleFor("UNUSUAL_EXPENSE"), {
       truncated: monthSeries.truncated,
     }),

@@ -171,12 +171,15 @@ describe("resolveAlertRules", () => {
     const lowBalance = rules[0];
     expect(lowBalance.thresholdAmount?.toFixed(2)).toBe("0.00");
 
-    const unusual = rules[2];
+    const threshold = rules[2];
+    expect(threshold.thresholdPercent?.toFixed(2)).toBe("80.00");
+
+    const unusual = rules[3];
     expect(unusual.thresholdAmount?.toFixed(2)).toBe("500.00");
     expect(unusual.thresholdCurrency).toBe("EUR");
 
-    expect(rules[3].thresholdDays).toBe(1);
-    expect(rules[4].thresholdDays).toBe(0);
+    expect(rules[4].thresholdDays).toBe(1);
+    expect(rules[5].thresholdDays).toBe(0);
   });
 
   it("lets a stored row override the defaults, field by field", () => {
@@ -213,6 +216,7 @@ describe("resolveAlertRules", () => {
 const VALID_FORM = {
   lowBalance: { enabled: true, thresholdAmount: "100,00", thresholdCurrency: "EUR" },
   budgetOverrun: { enabled: true, thresholdPercent: "10" },
+  budgetThreshold: { enabled: true, thresholdPercent: "80" },
   unusualExpense: { enabled: true, thresholdAmount: "500", thresholdCurrency: "EUR" },
   staleIntegration: { enabled: true, thresholdDays: "2" },
   overdueEvent: { enabled: true, thresholdDays: "0" },
@@ -235,6 +239,7 @@ describe("alertRulesInputSchema", () => {
     const parsed = alertRulesInputSchema.safeParse({
       lowBalance: { enabled: true, thresholdAmount: "", thresholdCurrency: "" },
       budgetOverrun: { enabled: false, thresholdPercent: "" },
+      budgetThreshold: { enabled: false, thresholdPercent: "" },
       unusualExpense: { enabled: false, thresholdAmount: "", thresholdCurrency: "" },
       staleIntegration: { enabled: true, thresholdDays: "" },
       overdueEvent: { enabled: false, thresholdDays: "" },
